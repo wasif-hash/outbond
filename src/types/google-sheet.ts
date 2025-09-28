@@ -1,4 +1,4 @@
-// types/google-sheet.ts
+// src/types/google-sheet.ts (REPLACE EXISTING FILE)
 export interface GoogleSpreadsheet {
   id: string;
   name: string;
@@ -35,4 +35,8 @@ export interface GoogleConnectionStatus {
 
 export interface GoogleAuthResponse {
   authUrl: string;
+}
+
+export interface GoogleSheetsListResponse {
+  spreadsheets: GoogleSpreadsheet[];
 }

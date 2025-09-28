@@ -33,6 +33,30 @@ export async function GET(request: NextRequest) {
 
     const spreadsheets = await getUserSpreadsheets(oauth2Client);
 
+    // Store/update spreadsheets in database for this user
+    for (const spreadsheet of spreadsheets) {
+      await prisma.googleSheet.upsert({
+        where: { 
+          userId_spreadsheetId: {
+            userId: authResult.user.userId,
+            spreadsheetId: spreadsheet.id
+          }
+        },
+        update: {
+          title: spreadsheet.name,
+          spreadsheetUrl: spreadsheet.webViewLink,
+          lastUsedAt: new Date(),
+        },
+        create: {
+          userId: authResult.user.userId,
+          spreadsheetId: spreadsheet.id,
+          spreadsheetUrl: spreadsheet.webViewLink,
+          title: spreadsheet.name,
+          lastUsedAt: new Date(),
+        },
+      });
+    }
+
     const response: GoogleSheetsListResponse = { spreadsheets };
     return NextResponse.json(response);
   } catch (error) {

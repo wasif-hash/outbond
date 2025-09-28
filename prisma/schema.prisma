@@ -13,8 +13,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-
-
 model User {
   id        String    @id @default(cuid())
   email     String    @unique
@@ -27,6 +25,8 @@ model User {
 
   googleTokens GoogleOAuthToken[]
   googleSheets GoogleSheet[]
+  campaigns    Campaign[]
+  leads        Lead[]
 
   @@map("users")
 }
@@ -63,6 +63,160 @@ model GoogleSheet {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
+  campaigns Campaign[]
+
   @@unique([userId, spreadsheetId])
   @@index([userId])
+}
+
+model Campaign {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name            String
+  nicheOrJobTitle String
+  keywords        String // comma separated
+  location        String
+
+  // Google Sheet info
+  googleSheetId String
+  googleSheet   GoogleSheet @relation(fields: [googleSheetId], references: [id])
+
+  // Configuration
+  maxLeads Int     @default(1000)
+  pageSize Int     @default(50)
+  isActive Boolean @default(true)
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  campaignJobs CampaignJob[]
+  leads        Lead[]
+
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+model CampaignJob {
+  id         String   @id @default(cuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  // Job control
+  idempotencyKey String    @unique
+  status         JobStatus @default(PENDING)
+
+  // Attempt tracking
+  attemptCount Int @default(0)
+  maxAttempts  Int @default(5)
+
+  // Timing
+  startedAt  DateTime?
+  finishedAt DateTime?
+  nextRunAt  DateTime?
+
+  // Results
+  totalPages     Int     @default(0)
+  leadsProcessed Int     @default(0)
+  leadsWritten   Int     @default(0)
+  lastError      String?
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  jobAttempts JobAttempt[]
+
+  @@index([status])
+  @@index([nextRunAt])
+  @@index([campaignId])
+}
+
+model JobAttempt {
+  id            String      @id @default(cuid())
+  campaignJobId String
+  campaignJob   CampaignJob @relation(fields: [campaignJobId], references: [id], onDelete: Cascade)
+
+  attemptNumber Int
+  status        JobStatus
+  startedAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  error         String?
+
+  // Progress tracking
+  pagesProcessed Int @default(0)
+  leadsFound     Int @default(0)
+  leadsWritten   Int @default(0)
+
+  @@index([campaignJobId])
+}
+
+model Lead {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  // Lead data from Instantly
+  email       String
+  firstName   String?
+  lastName    String?
+  phone       String?
+  company     String?
+  jobTitle    String?
+  website     String?
+  linkedinUrl String?
+  industry    String?
+  location    String?
+
+  // Metadata
+  source String   @default("instantly") // instantly, manual, import
+  tags   String[] @default([])
+
+  // Status tracking
+  isValid      Boolean @default(true)
+  isSuppressed Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([email, campaignId]) // Prevent duplicates within campaign
+  @@index([userId])
+  @@index([campaignId])
+  @@index([email])
+}
+
+model RateLimit {
+  id         String   @id @default(cuid())
+  key        String   @unique // global, tenant:userId, campaign:campaignId
+  tokens     Int      @default(0)
+  lastRefill DateTime @default(now())
+  maxTokens  Int
+  refillRate Int // tokens per second
+
+  @@index([key])
+}
+
+model JobLock {
+  id        String   @id @default(cuid())
+  lockKey   String   @unique // campaign:campaignId, global:instantly
+  ownerId   String // worker/process identifier
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([lockKey])
+  @@index([expiresAt])
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
 }

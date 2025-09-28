@@ -71,13 +71,22 @@ export const useGoogleSheets = () => {
       setLoading(true);
       setError(null);
 
+      // First fetch from Google API and store in database
       const response = await fetch('/api/google-sheets');
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to fetch spreadsheets');
       }
 
-      const { spreadsheets } = await response.json();
+      // Then fetch stored sheets for form use
+      const storedResponse = await fetch('/api/google-sheets/stored');
+      if (!storedResponse.ok) {
+        const errorData = await storedResponse.json();
+        throw new Error(errorData.error || 'Failed to fetch stored spreadsheets');
+      }
+
+      const { spreadsheets } = await storedResponse.json();
+      console.log('Fetched stored spreadsheets:', spreadsheets);
       setSpreadsheets(spreadsheets);
     } catch (error) {
       setError('Failed to fetch spreadsheets');

@@ -1,57 +1,47 @@
-import { NextResponse } from 'next/server'
-import type { NextRequest } from 'next/server'
-import { jwtVerify } from 'jose'
-
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key-change-in-production')
-
-// Define protected routes
-const protectedRoutes = ['/dashboard']
-const adminOnlyRoutes = ['/dashboard/users', '/dashboard/settings']
-const publicRoutes = ['/', '/api/login', '/api/init-admin']
+// src/middleware.ts
+import { NextRequest, NextResponse } from 'next/server'
+import { verifyAuth } from '@/lib/auth'
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // Allow public routes
-  if (publicRoutes.includes(pathname)) {
-    return NextResponse.next()
+  // Rate limiting for API routes
+  if (pathname.startsWith('/api/campaigns')) {
+    // Simple rate limiting - 100 requests per minute per IP
+    const ip =
+      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      request.headers.get('x-real-ip') ||
+      'unknown'
+    const key = `api_rate_limit:${ip}`
+    
+    // This would be implemented with Redis in production
+    // For now, we'll just add headers for monitoring
+    const response = NextResponse.next()
+    response.headers.set('X-Client-IP', ip)
+    return response
   }
 
-  // Check if route is protected
-  const isProtectedRoute = protectedRoutes.some(route => pathname.startsWith(route))
-  const isAdminOnlyRoute = adminOnlyRoutes.some(route => pathname.startsWith(route))
-
-  if (!isProtectedRoute) {
-    return NextResponse.next()
-  }
-
-  // Get authentication token
-  const token = request.cookies.get('auth-token')?.value
-
-  if (!token) {
-    // Redirect to login if no token
-    return NextResponse.redirect(new URL('/', request.url))
-  }
-
-  try {
-    // Verify the token
-    const { payload } = await jwtVerify(token, JWT_SECRET)
-    const userRole = payload.role as string
-
-    // Check admin access for admin-only routes
-    if (isAdminOnlyRoute && userRole !== 'admin') {
-      // Redirect to dashboard with error
-      const url = new URL('/dashboard', request.url)
-      url.searchParams.set('error', 'insufficient_permissions')
-      return NextResponse.redirect(url)
+  // Protect dashboard routes
+  if (pathname.startsWith('/dashboard')) {
+    const authResult = await verifyAuth(request)
+    
+    if (!authResult.success) {
+      return NextResponse.redirect(new URL('/login', request.url))
     }
 
-    // Allow access
-    return NextResponse.next()
-
-  } catch (error) {
-    console.error('Token verification failed in middleware:', error)
-    // Redirect to login if token is invalid
-    return NextResponse.redirect(new URL('/', request.url))
+    // Admin-only routes
+    if (pathname.startsWith('/dashboard/users') && authResult.user?.role !== 'admin') {
+      return NextResponse.redirect(new URL('/dashboard', request.url))
+    }
   }
+
+  return NextResponse.next()
+}
+
+export const config = {
+  matcher: [
+    '/dashboard/:path*',
+    '/api/campaigns/:path*',
+    '/api/users/:path*'
+  ]
 }

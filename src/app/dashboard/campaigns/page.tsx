@@ -1,200 +1,337 @@
+// src/app/dashboard/campaigns/page.tsx
 "use client"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { Play, Pause, MoreHorizontal } from "lucide-react"
+import { Plus, RefreshCw } from "lucide-react"
+import { toast } from 'react-hot-toast'
 
-const campaigns = [
-  {
-    id: 1,
-    name: "Q3 Utility Outreach",
-    status: "active",
-    leadsInQueue: 89,
-    sentToday: 23,
-    totalSent: 156,
-    replies: 8,
-    bookings: 2,
-    lastActivity: "2 hours ago"
-  },
-  {
-    id: 2, 
-    name: "Telecom Decision Makers",
-    status: "paused",
-    leadsInQueue: 45,
-    sentToday: 0,
-    totalSent: 87,
-    replies: 5,
-    bookings: 1,
-    lastActivity: "1 day ago"
-  },
-  {
-    id: 3,
-    name: "Energy Sector Pilots",
-    status: "active", 
-    leadsInQueue: 23,
-    sentToday: 12,
-    totalSent: 234,
-    replies: 15,
-    bookings: 4,
-    lastActivity: "45 min ago"
-  },
-]
+import { useCampaigns } from '@/hooks/useCampaigns'
+import { useCampaignStatus } from '@/hooks/useCampaignStatus'
 
-const activityFeed = [
-  { time: "2:30 PM", event: "Email sent to Marco Ruiz", status: "sent" },
-  { time: "2:15 PM", event: "Reply received from Jane Doe", status: "reply" },
-  { time: "1:45 PM", event: "Email sent to Priya Patel", status: "sent" },
-  { time: "12:30 PM", event: "Booking confirmed with John Smith", status: "booking" },
-  { time: "11:15 AM", event: "Email bounced for old.contact@defunct.com", status: "bounce" },
-]
+import { formatRelativeTime } from '@/lib/utils'
+import { CampaignStatusBadge } from "@/components/campaigns/CampaignStatusBadge"
+import { CampaignActions } from "@/components/campaigns/CampaignActions"
+import { CampaignMetrics, CampaignProgressIndicator } from "@/components/campaigns/CampaignProgressIndicator"
+import { CreateCampaignForm } from "@/components/campaigns/createCampaignForm"
 
 export default function Campaigns() {
-  const [selectedCampaign, setSelectedCampaign] = useState<typeof campaigns[0] | null>(null)
+  const [selectedCampaign, setSelectedCampaign] = useState<string | null>(null)
+  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const {
+    campaigns,
+    loading,
+    error,
+    fetchCampaigns,
+    updateCampaign,
+    deleteCampaign,
+    retryCampaign,
+  } = useCampaigns()
+
+  const {
+    status: selectedCampaignStatus,
+    loading: statusLoading,
+    startPolling,
+    stopPolling,
+  } = useCampaignStatus(selectedCampaign || '', 5000)
+
+  useEffect(() => {
+    fetchCampaigns()
+  }, [])
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    await fetchCampaigns()
+    setRefreshing(false)
+    toast.success('Campaigns refreshed')
+  }
+
+  const handleToggleActive = async (campaignId: string, isActive: boolean) => {
+    try {
+      await updateCampaign(campaignId, { isActive })
+    } catch (error) {
+      // Error is handled in the hook
+    }
+  }
+
+  const handleRetry = async (campaignId: string) => {
+    try {
+      await retryCampaign(campaignId)
+      // Start polling if this is the selected campaign
+      if (campaignId === selectedCampaign) {
+        startPolling()
+      }
+    } catch (error) {
+      // Error is handled in the hook
+    }
+  }
+
+  const handleDelete = async (campaignId: string) => {
+    if (window.confirm('Are you sure you want to delete this campaign? This action cannot be undone.')) {
+      try {
+        await deleteCampaign(campaignId)
+        if (campaignId === selectedCampaign) {
+          setSelectedCampaign(null)
+          stopPolling()
+        }
+      } catch (error) {
+        // Error is handled in the hook
+      }
+    }
+  }
+
+  const handleCampaignCreated = async () => {
+    await fetchCampaigns()
+  }
+
+  const handleSelectCampaign = (campaignId: string) => {
+    setSelectedCampaign(campaignId)
+  }
+
+  const selectedCampaignData = campaigns.find(c => c.id === selectedCampaign)
+
+  if (error) {
+    return (
+      <div className="p-6">
+        <div className="bg-red-50 border border-red-200 rounded-md p-4">
+          <div className="text-red-800">Error loading campaigns: {error}</div>
+          <Button 
+            onClick={handleRefresh}
+            variant="outline" 
+            size="sm" 
+            className="mt-2"
+          >
+            Try Again
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6">
       <div className="mb-6">
-        <h1 className="text-3xl font-mono font-bold text-foreground">Campaigns</h1>
-        <p className="text-muted-text mt-1">Manage and monitor your outbound email campaigns</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-mono font-bold text-foreground">Campaigns</h1>
+            <p className="text-muted-foreground mt-1">Manage and monitor your lead generation campaigns</p>
+          </div>
+          <div className="flex items-center space-x-3">
+            <Button
+              variant="outline"
+              onClick={handleRefresh}
+              disabled={refreshing || loading}
+              size="sm"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+            <Button onClick={() => setShowCreateForm(true)}>
+              <Plus className="h-4 w-4 mr-2" />
+              Create Campaign
+            </Button>
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Campaign List */}
-        <div className="lg:col-span-2 space-y-4">
+      {loading && campaigns.length === 0 ? (
+        <div className="flex items-center justify-center h-64">
+          <div className="text-muted-foreground">Loading campaigns...</div>
+        </div>
+      ) : campaigns.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center h-64 text-center">
+            <h3 className="text-lg font-medium mb-2">No campaigns yet</h3>
+            <p className="text-muted-foreground mb-4">
+              Create your first campaign to start generating leads
+            </p>
+            <Button onClick={() => setShowCreateForm(true)}>
+              <Plus className="h-4 w-4 mr-2" />
+              Create First Campaign
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-4">
           {campaigns.map((campaign) => (
             <Card 
               key={campaign.id} 
               className="cursor-pointer hover:shadow-md transition-shadow"
-              onClick={() => setSelectedCampaign(campaign)}
+              onClick={() => handleSelectCampaign(campaign.id)}
             >
               <CardContent className="p-6">
                 <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <h3 className="text-lg font-mono font-bold mb-2">{campaign.name}</h3>
-                    <Badge variant={campaign.status === "active" ? "positive" : "neutral"}>
-                      {campaign.status === "active" ? "Active" : "Paused"}
-                    </Badge>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <h3 className="text-lg font-mono font-bold">{campaign.name}</h3>
+                      <CampaignStatusBadge
+                        status={campaign.latestJob?.status || 'PENDING'} 
+                      />
+                    </div>
+                    
+                    <div className="space-y-1 text-sm text-muted-foreground">
+                      <div><strong>Target:</strong> {campaign.nicheOrJobTitle}</div>
+                      <div><strong>Location:</strong> {campaign.location}</div>
+                      {campaign.keywords && (
+                        <div><strong>Keywords:</strong> {campaign.keywords}</div>
+                      )}
+                      <div><strong>Google Sheet:</strong> {campaign.googleSheet.title}</div>
+                    </div>
                   </div>
-                  <Button variant="ghost" size="sm">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
+                  
+                  <CampaignActions
+                    campaign={campaign}
+                    latestJobStatus={campaign.latestJob?.status}
+                    onToggleActive={handleToggleActive}
+                    onRetry={handleRetry}
+                    onDelete={handleDelete}
+                    disabled={loading}
+                  />
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                  <div>
-                    <div className="text-muted-text">In Queue</div>
-                    <div className="font-mono font-bold text-lg">{campaign.leadsInQueue}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-text">Sent Today</div>
-                    <div className="font-mono font-bold text-lg">{campaign.sentToday}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-text">Replies</div>
-                    <div className="font-mono font-bold text-lg">{campaign.replies}</div>
-                  </div>
-                  <div>
-                    <div className="text-muted-text">Bookings</div>
-                    <div className="font-mono font-bold text-lg">{campaign.bookings}</div>
-                  </div>
-                </div>
+                <CampaignMetrics
+                  totalLeads={campaign.totalLeads}
+                  leadsProcessed={campaign.latestJob?.leadsProcessed}
+                  leadsWritten={campaign.latestJob?.leadsProcessed} // Using same value for now
+                  status={campaign.latestJob?.status}
+                />
 
-                <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
-                  <div className="text-xs text-muted-text">
-                    Last activity: {campaign.lastActivity}
-                  </div>
-                  <div className="flex gap-2">
-                    {campaign.status === "active" ? (
-                      <Button variant="outline" size="sm">
-                        <Pause className="h-4 w-4 mr-1" />
-                        Pause
-                      </Button>
-                    ) : (
-                      <Button variant="plum" size="sm">
-                        <Play className="h-4 w-4 mr-1" />
-                        Resume
-                      </Button>
+                {campaign.latestJob && (
+                  <div className="flex items-center justify-between mt-4 pt-4 border-t border-border text-xs text-muted-foreground">
+                    <div>
+                      {campaign.latestJob.startedAt && (
+                        <span>Started: {formatRelativeTime(new Date(campaign.latestJob.startedAt))}</span>
+                      )}
+                      {campaign.latestJob.finishedAt && (
+                        <span className="ml-4">
+                          Finished: {formatRelativeTime(new Date(campaign.latestJob.finishedAt))}
+                        </span>
+                      )}
+                    </div>
+                    
+                    {campaign.latestJob.lastError && (
+                      <div className="text-red-600 font-medium">
+                        Error: {campaign.latestJob.lastError}
+                      </div>
                     )}
                   </div>
-                </div>
+                )}
+
+                {campaign.latestJob?.status === 'RUNNING' && (
+                  <CampaignProgressIndicator
+                    current={campaign.latestJob.leadsProcessed || 0}
+                    total={campaign.maxLeads}
+                    status={campaign.latestJob.status}
+                    className="mt-4"
+                  />
+                )}
               </CardContent>
             </Card>
           ))}
         </div>
-
-        {/* Activity Feed */}
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg font-mono">Recent Activity</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {activityFeed.map((activity, index) => (
-                  <div key={index} className="flex items-start space-x-3">
-                    <div className="text-xs text-muted-text font-mono min-w-[4rem]">
-                      {activity.time}
-                    </div>
-                    <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${
-                      activity.status === "sent" ? "bg-cwt-plum" :
-                      activity.status === "reply" ? "bg-electric-blue" :
-                      activity.status === "booking" ? "bg-status-positive" :
-                      "bg-status-bounce"
-                    }`} />
-                    <div className="text-sm text-foreground leading-5">
-                      {activity.event}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+      )}
 
       {/* Campaign Detail Sheet */}
       <Sheet open={!!selectedCampaign} onOpenChange={() => setSelectedCampaign(null)}>
         <SheetContent className="w-[400px] sm:w-[540px]">
           <SheetHeader>
             <SheetTitle className="font-mono">
-              {selectedCampaign?.name}
+              {selectedCampaignData?.name}
             </SheetTitle>
           </SheetHeader>
           
-          {selectedCampaign && (
+          {selectedCampaignData && (
             <div className="mt-6 space-y-6">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="text-center p-4 bg-muted-bg rounded-lg">
-                  <div className="text-2xl font-mono font-bold">{selectedCampaign.totalSent}</div>
-                  <div className="text-sm text-muted-text">Total Sent</div>
-                </div>
-                <div className="text-center p-4 bg-muted-bg rounded-lg">
-                  <div className="text-2xl font-mono font-bold">{selectedCampaign.replies}</div>
-                  <div className="text-sm text-muted-text">Replies</div>
-                </div>
+              <div className="flex items-center gap-3">
+                <CampaignStatusBadge 
+                  status={selectedCampaignStatus?.latestJob?.status || 'PENDING'} 
+                />
+                {selectedCampaignStatus?.latestJob?.status === 'RUNNING' && (
+                  <span className="text-sm text-muted-foreground">
+                    Processing leads...
+                  </span>
+                )}
               </div>
 
-              <div>
-                <h4 className="font-mono font-bold mb-3">Campaign Activity</h4>
-                <div className="space-y-3">
-                  {activityFeed.slice(0, 3).map((activity, index) => (
-                    <div key={index} className="flex items-start space-x-3 text-sm">
-                      <div className="text-muted-text font-mono min-w-[4rem]">
-                        {activity.time}
-                      </div>
-                      <div className="text-foreground">
-                        {activity.event}
-                      </div>
+              <div className="space-y-4">
+                <div>
+                  <h4 className="font-mono font-bold mb-2">Campaign Details</h4>
+                  <div className="space-y-2 text-sm">
+                    <div><strong>Target:</strong> {selectedCampaignData.nicheOrJobTitle}</div>
+                    <div><strong>Location:</strong> {selectedCampaignData.location}</div>
+                    <div><strong>Max Leads:</strong> {selectedCampaignData.maxLeads.toLocaleString()}</div>
+                    {selectedCampaignData.keywords && (
+                      <div><strong>Keywords:</strong> {selectedCampaignData.keywords}</div>
+                    )}
+                  </div>
+                </div>
+
+                {selectedCampaignStatus && (
+                  <CampaignMetrics
+                    totalLeads={selectedCampaignStatus.totalLeads}
+                    leadsProcessed={selectedCampaignStatus.latestJob?.leadsProcessed}
+                    leadsWritten={selectedCampaignStatus.latestJob?.leadsWritten}
+                    totalPages={selectedCampaignStatus.latestJob?.totalPages}
+                    status={selectedCampaignStatus.latestJob?.status}
+                  />
+                )}
+
+                {selectedCampaignStatus?.latestJob?.status === 'RUNNING' && (
+                  <CampaignProgressIndicator
+                    current={selectedCampaignStatus.latestJob.leadsProcessed || 0}
+                    total={selectedCampaignData.maxLeads}
+                    status={selectedCampaignStatus.latestJob.status}
+                  />
+                )}
+
+                {selectedCampaignStatus?.latestJob?.lastError && (
+                  <div className="bg-red-50 border border-red-200 rounded-md p-3">
+                    <div className="text-sm font-medium text-red-800 mb-1">Last Error</div>
+                    <div className="text-sm text-red-700">
+                      {selectedCampaignStatus.latestJob.lastError}
                     </div>
-                  ))}
+                    {selectedCampaignStatus.latestJob.status === 'FAILED' && (
+                      <Button 
+                        onClick={() => handleRetry(selectedCampaignData.id)}
+                        variant="outline"
+                        size="sm"
+                        className="mt-3"
+                        disabled={loading}
+                      >
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Retry Campaign
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                <div className="pt-4 border-t">
+                  <Button 
+                    variant="outline" 
+                    className="w-full"
+                    onClick={() => {
+                      const url = `https://docs.google.com/spreadsheets/d/${selectedCampaignData.googleSheet.spreadsheetId}`
+                      window.open(url, '_blank')
+                    }}
+                  >
+                    Open Google Sheet
+                  </Button>
                 </div>
               </div>
             </div>
           )}
         </SheetContent>
       </Sheet>
+
+      {/* Create Campaign Form */}
+      <CreateCampaignForm
+        open={showCreateForm}
+        onOpenChange={setShowCreateForm}
+        onSuccess={handleCampaignCreated}
+      />
     </div>
   )
 }
