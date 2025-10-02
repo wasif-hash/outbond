@@ -3,19 +3,24 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { Prisma } from '@prisma/client'
 
 import { generateIdempotencyKey } from '@/lib/utils'
+import { getCampaignsForUser } from '@/lib/campaigns'
 import { z } from 'zod'
 import { enqueueJob } from '@/lib/queue'
 
 const createCampaignSchema = z.object({
   name: z.string().min(1).max(255),
-  nicheOrJobTitle: z.string().min(1).max(255),
-  keywords: z.string().max(1000),
-  location: z.string().max(255),
+  jobTitles: z.array(z.string().min(1)).min(1).max(10).transform(arr => arr.join(', ')),
+  keywords: z.string().max(1000).optional().transform(val => val || ''),
+  locations: z.array(z.string().min(1)).min(1).max(10).transform(arr => arr.join(', ')),
   googleSheetId: z.string().min(1),
-  maxLeads: z.number().int().positive().max(10000).optional().default(1000),
-  pageSize: z.number().int().positive().max(100).optional().default(50),
+  maxLeads: z.number().int().positive().max(10000).default(1000),
+  pageSize: z.number().int().positive().max(100).default(25),
+  includeDomains: z.string().max(1000).optional().transform(val => val || undefined),
+  excludeDomains: z.string().max(1000).optional().transform(val => val || undefined),
+  searchMode: z.enum(['balanced', 'conserve']).default('balanced'),
 })
 
 export async function POST(request: NextRequest) {
@@ -43,19 +48,48 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Create campaign
-    const campaign = await prisma.campaign.create({
-      data: {
-        userId: authResult.user.userId,
-        name: validatedData.name,
-        nicheOrJobTitle: validatedData.nicheOrJobTitle,
-        keywords: validatedData.keywords,
-        location: validatedData.location,
-        googleSheetId: validatedData.googleSheetId,
-        maxLeads: validatedData.maxLeads,
-        pageSize: validatedData.pageSize,
-      },
-    })
+    // Prepare campaign data, removing undefined values
+    const campaignData = {
+      userId: authResult.user.userId,
+      name: validatedData.name,
+      nicheOrJobTitle: validatedData.jobTitles, // Already joined by schema transform
+      keywords: validatedData.keywords, // Already handled by schema transform
+      location: validatedData.locations, // Already joined by schema transform
+      googleSheetId: validatedData.googleSheetId,
+      maxLeads: validatedData.maxLeads,
+      pageSize: validatedData.pageSize,
+      ...(validatedData.includeDomains ? { includeDomains: validatedData.includeDomains } : {}),
+      ...(validatedData.excludeDomains ? { excludeDomains: validatedData.excludeDomains } : {}),
+      searchMode: validatedData.searchMode,
+    }
+
+    let campaign
+
+    try {
+      campaign = await prisma.campaign.create({
+        data: campaignData,
+      })
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientValidationError && error.message.includes('Unknown argument `searchMode`')) {
+        console.warn('Prisma client does not yet recognise searchMode field, retrying without it. Consider regenerating Prisma client.')
+
+        const { searchMode, ...fallbackData } = campaignData as typeof campaignData & { searchMode?: string }
+        campaign = await prisma.campaign.create({
+          data: fallbackData,
+        })
+
+        if (searchMode) {
+          await prisma.$executeRaw`
+            UPDATE "Campaign"
+            SET "searchMode" = ${searchMode}
+            WHERE "id" = ${campaign.id}
+          `
+          ;(campaign as any).searchMode = searchMode
+        }
+      } else {
+        throw error
+      }
+    }
 
     // Generate idempotency key for the job
     const idempotencyKey = generateIdempotencyKey(campaign.id, 'initial')
@@ -110,72 +144,18 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url)
-    const page = parseInt(searchParams.get('page') || '1')
-    const limit = parseInt(searchParams.get('limit') || '20')
-    const offset = (page - 1) * limit
+    const pageParam = parseInt(searchParams.get('page') || '1', 10)
+    const limitParam = parseInt(searchParams.get('limit') || '20', 10)
+    const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1
+    const limit = Number.isFinite(limitParam)
+      ? Math.min(Math.max(limitParam, 1), 100)
+      : 20
 
-    const campaigns = await prisma.campaign.findMany({
-      where: {
-        userId: authResult.user.userId,
-      },
-      include: {
-        googleSheet: {
-          select: {
-            title: true,
-            spreadsheetId: true,
-          },
-        },
-        campaignJobs: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: {
-            status: true,
-            startedAt: true,
-            finishedAt: true,
-            leadsProcessed: true,
-            lastError: true,
-            attemptCount: true,
-          },
-        },
-        _count: {
-          select: {
-            leads: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: offset,
-      take: limit,
-    })
+    const response = await getCampaignsForUser(authResult.user.userId, { page, limit })
 
-    const total = await prisma.campaign.count({
-      where: {
-        userId: authResult.user.userId,
-      },
-    })
-
-    const formattedCampaigns = campaigns.map(campaign => ({
-      id: campaign.id,
-      name: campaign.name,
-      nicheOrJobTitle: campaign.nicheOrJobTitle,
-      keywords: campaign.keywords,
-      location: campaign.location,
-      maxLeads: campaign.maxLeads,
-      isActive: campaign.isActive,
-      createdAt: campaign.createdAt,
-      updatedAt: campaign.updatedAt,
-      googleSheet: campaign.googleSheet,
-      latestJob: campaign.campaignJobs[0] || null,
-      totalLeads: campaign._count.leads,
-    }))
-
-    return NextResponse.json({
-      campaigns: formattedCampaigns,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
+    return NextResponse.json(response, {
+      headers: {
+        'Cache-Control': 'no-store',
       },
     })
 

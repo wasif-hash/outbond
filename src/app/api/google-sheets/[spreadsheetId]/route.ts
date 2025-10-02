@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/auth';
 
 import { prisma } from '@/lib/prisma';
-import { createAuthorizedClient, getSpreadsheetData, getSpreadsheetInfo, refreshTokenIfNeeded } from '@/lib/google-sheet';
+import { createAuthorizedClient, getSpreadsheetData, getSpreadsheetInfo, refreshTokenIfNeeded } from '@/lib/google-sheet/google-sheet';
 import { SpreadsheetData } from '@/types/google-sheet';
 
 

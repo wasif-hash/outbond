@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { newOAuth2Client } from '@/lib/google-auth';
+import { newOAuth2Client } from '@/lib/google-sheet/google-auth';
 import { verifyAuth } from '@/lib/auth';
 import { GoogleAuthResponse } from '@/types/google-sheet';
 

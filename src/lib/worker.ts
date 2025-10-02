@@ -1,17 +1,19 @@
-// src/lib/worker.ts (REPLACE EXISTING)
+// src/lib/worker.ts
 import { Worker, Job } from 'bullmq'
+import type { Lead } from '@prisma/client'
 import { redis, LeadFetchJobData } from './queue'
 import { prisma } from './prisma'
-import { InstantlyClient, InstantlyError, InstantlyLead } from './instantly'
+import { apollo, ApolloError, ApolloSearchFilters, ApolloLead, ApolloSearchResponse } from './apollo'
+import { generateSmartLeadSummary } from './gemini'
+import { generateLeadSummary, SheetLeadRow, sanitizeEmailForSheet } from './utils'
 import { 
-  globalInstantlyRateLimit, 
   createUserRateLimit, 
   createCampaignRateLimit, 
   RedisLock 
 } from './rate-limit'
 
-import { createAuthorizedClient } from './google-sheet'
-import { writeLeadsToSheet } from './google-sheet-writer'
+import { createAuthorizedClient } from './google-sheet/google-sheet'
+import { writeLeadsToSheet } from './google-sheet/google-sheet-writer'
 
 export class LeadFetchWorker {
   private worker: Worker
@@ -19,22 +21,38 @@ export class LeadFetchWorker {
   constructor() {
     this.worker = new Worker('lead-fetch', this.processJob.bind(this), {
       connection: redis,
-      concurrency: 3, // Reduced concurrency to avoid rate limits
+      concurrency: 2, // Reduced concurrency for rate limiting
     })
 
     this.worker.on('completed', (job: any) => {
-      console.log(`Job ${job.id} completed successfully`)
+      console.log(`✅ Job ${job.id} completed successfully`)
     })
 
     this.worker.on('failed', (job: any, err: any) => {
-      console.error(`Job ${job?.id} failed:`, err.message)
+      console.error(`❌ Job ${job?.id} failed:`, err.message)
     })
   }
 
   private async processJob(job: Job<LeadFetchJobData>): Promise<void> {
-    const { campaignId, jobId, userId } = job.data
+    const { campaignId, jobId, userId, isRetry } = job.data
     
-    console.log(`🚀 Starting lead fetch job ${jobId} for campaign ${campaignId}`)
+    console.log(`🚀 Starting lead fetch job ${jobId} for campaign ${campaignId}${isRetry ? ' (RETRY)' : ''}`)
+
+    // Set up rate limiters
+    const userRateLimit = createUserRateLimit(userId)
+    const campaignRateLimit = createCampaignRateLimit(campaignId)
+    
+    // Test connection to Apollo API
+    try {
+      const connected = await apollo.checkConnection()
+      if (!connected) {
+        throw new Error('Failed to connect to Apollo API')
+      }
+      console.log('✅ Connected to Apollo API')
+    } catch (error) {
+      console.error('❌ Apollo API connection failed:', error)
+      throw new Error(`Apollo API connection failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
 
     // Acquire distributed lock to prevent concurrent execution
     const lock = new RedisLock(`campaign:${campaignId}`)
@@ -45,7 +63,7 @@ export class LeadFetchWorker {
       throw new Error(`Cannot acquire lock for campaign ${campaignId} - another job may be running`)
     }
 
-    console.log(`✅ Lock acquired for campaign ${campaignId}`)
+    console.log(`🔒 Lock acquired for campaign ${campaignId}`)
 
     try {
       // Update job status to running
@@ -59,6 +77,8 @@ export class LeadFetchWorker {
           status: 'RUNNING',
         },
       })
+
+      console.log(`📝 Created job attempt ${attempt.id} (attempt #${attempt.attemptNumber})`)
 
       // Get campaign details
       const campaign = await prisma.campaign.findUnique({
@@ -81,158 +101,257 @@ export class LeadFetchWorker {
         throw new Error(`No Google token found for user ${userId}`)
       }
 
+      console.log(`📋 Processing campaign: ${campaign.name}`)
+      console.log(`📊 Target: ${campaign.nicheOrJobTitle} in ${campaign.location}`)
+      console.log(`🔍 Keywords: ${campaign.keywords || 'none'}`)
+      console.log(`📈 Max leads: ${campaign.maxLeads}`)
+
       // Set up rate limiters
       const userRateLimit = createUserRateLimit(userId)
       const campaignRateLimit = createCampaignRateLimit(campaignId)
 
-      // Initialize the Instantly client
-      const instantlyClient = new InstantlyClient()
-      
-      console.log(`🔍 Starting lead search for campaign: ${campaign.name}`)
-      
       let totalLeadsProcessed = 0
       let totalLeadsWritten = 0
-      let currentPage = 1
-      let hasMoreLeads = true
-      let startingAfter: string | undefined = undefined
 
-      // Build search query from campaign parameters
-      const searchTerms = []
-      searchTerms.push(campaign.nicheOrJobTitle)
-      
-      if (campaign.location) {
-        searchTerms.push(campaign.location)
+      // Parse job titles and locations from campaign
+      const jobTitles = campaign.nicheOrJobTitle 
+        ? campaign.nicheOrJobTitle.split(',').map(t => t.trim()).filter(t => t.length > 0)
+        : []
+
+      const locations = campaign.location
+        ? campaign.location.split(',').map(l => l.trim()).filter(l => l.length > 0)
+        : []
+
+      const includeDomains = campaign.includeDomains
+        ? campaign.includeDomains.split(',').map(d => d.trim().toLowerCase()).filter(Boolean)
+        : []
+
+      const excludeDomains = campaign.excludeDomains
+        ? campaign.excludeDomains.split(',').map(d => d.trim().toLowerCase()).filter(Boolean)
+        : []
+
+      console.log(`🔍 Job titles:`, jobTitles)
+      console.log(`📍 Locations:`, locations)
+      if (includeDomains.length > 0) {
+        console.log(`✅ Including domains:`, includeDomains)
       }
-      
-      if (campaign.keywords) {
-        const keywords = campaign.keywords.split(',').map(k => k.trim()).filter(k => k.length > 0)
-        searchTerms.push(...keywords)
+      if (excludeDomains.length > 0) {
+        console.log(`⛔ Excluding domains:`, excludeDomains)
       }
-      
-      const searchQuery = searchTerms.join(' ')
-      console.log(`🔍 Search query: "${searchQuery}"`)
 
-      // Main lead fetching loop
-      while (hasMoreLeads && totalLeadsProcessed < campaign.maxLeads) {
-        // Check rate limits before each request
-        await this.checkRateLimits([globalInstantlyRateLimit, userRateLimit, campaignRateLimit])
+      let aggregatedLeads: Lead[] = []
+      let aggregatedSheetRows: SheetLeadRow[] = []
+      let pagesProcessed = 0
+      let totalPagesReported = 0
 
-        // Add delay between requests to respect rate limits
-        if (currentPage > 1) {
-          console.log(`⏳ Waiting 3 seconds before next request...`)
-          await this.delay(3000)
-        }
+      const modes: Array<'conserve' | 'balanced'> = campaign.searchMode === 'conserve'
+        ? ['conserve', 'balanced']
+        : ['balanced']
 
-        try {
-          console.log(`📄 Fetching page ${currentPage}...`)
-          
-          const response = await instantlyClient.searchLeads({
-            search: searchQuery,
-            filter: 'FILTER_VAL_UNCONTACTED',
-            limit: Math.min(campaign.pageSize, campaign.maxLeads - totalLeadsProcessed),
-            starting_after: startingAfter
-          })
+      for (const mode of modes) {
+        const requestedPageSize = Math.max(1, Math.min(campaign.pageSize || 25, 100))
+        const perPage = mode === 'conserve' ? Math.min(requestedPageSize, 15) : requestedPageSize
+        const desiredMaxPages = Math.max(1, Math.ceil((campaign.maxLeads || perPage) / perPage))
+        const maxPagesToFetch = mode === 'conserve'
+          ? Math.min(20, Math.max(10, desiredMaxPages))
+          : Math.min(50, Math.max(30, desiredMaxPages))
+        const emptyPageThreshold = mode === 'conserve' ? 2 : 3
 
-          const leads = response.data || []
-          console.log(`📄 Page ${currentPage}: Found ${leads.length} leads`)
+        const seenLeads = new Set<string>()
+        const attemptLeads: Lead[] = []
+        const attemptRows: SheetLeadRow[] = []
+
+        let currentPage = 1
+        let consecutiveEmptyPages = 0
+        let attemptPagesProcessed = 0
+        let attemptTotalPagesReported = 0
+
+        console.log(`🎯 Fetching up to ${campaign.maxLeads} leads with page size ${perPage}`)
+        console.log(`🛡️ Page fetch ceiling set to ${maxPagesToFetch} pages (${mode === 'conserve' ? 'credit saver' : 'balanced'} mode)`)
+
+        while (attemptLeads.length < campaign.maxLeads) {
+          await this.checkRateLimits([userRateLimit, campaignRateLimit])
+
+          const searchFilters: ApolloSearchFilters = {
+            person_titles: jobTitles,
+            person_locations: locations,
+            keywords: campaign.keywords 
+              ? campaign.keywords.split(',').map(k => k.trim()).filter(k => k.length > 0)
+              : undefined,
+            page: currentPage,
+            per_page: perPage,
+          }
+
+          console.log(`🔍 Apollo search (page ${currentPage}):`, JSON.stringify(searchFilters))
+
+          const searchResponse = await this.executeApolloSearchWithRetry(searchFilters)
+          const totalPages = searchResponse.pagination?.total_pages || currentPage
+          attemptTotalPagesReported = Math.max(attemptTotalPagesReported, totalPages)
+          attemptPagesProcessed += 1
+
+          const leads = apollo.processLeads(searchResponse.people)
+          console.log(`📊 Apollo returned ${leads.length} leads on page ${currentPage}`)
 
           if (leads.length === 0) {
-            console.log(`📄 No more leads found, ending search`)
-            hasMoreLeads = false
+            consecutiveEmptyPages += 1
+            if (currentPage >= totalPages) {
+              console.log(`⚠️ No more leads returned (page ${currentPage}), stopping pagination.`)
+              break
+            }
+            if (consecutiveEmptyPages >= emptyPageThreshold) {
+              console.log(`⚠️ Received empty responses for ${consecutiveEmptyPages} consecutive pages, stopping early to save credits.`)
+              break
+            }
+            currentPage += 1
+            continue
+          }
+
+          consecutiveEmptyPages = 0
+
+          const filteredByDomain = leads.filter(lead => {
+            const domain = (lead.domain || '').toLowerCase()
+
+            if (includeDomains.length > 0 && (!domain || !includeDomains.some(d => domain.includes(d)))) {
+              return false
+            }
+
+            if (excludeDomains.length > 0 && domain && excludeDomains.some(d => domain.includes(d))) {
+              return false
+            }
+
+            return true
+          })
+
+          if (filteredByDomain.length !== leads.length) {
+            console.log(`🧹 Domain filters removed ${leads.length - filteredByDomain.length} leads on page ${currentPage}`)
+          }
+
+          const remainingCapacity = Math.max(0, campaign.maxLeads - attemptLeads.length)
+          const uniqueLeads = [] as ApolloLead[]
+
+          for (const lead of filteredByDomain) {
+            const rawEmail = lead.email?.toLowerCase().trim() || ''
+            const dedupeKey = rawEmail && this.isValidEmail(rawEmail) && !rawEmail.includes('not_unlocked')
+              ? rawEmail
+              : `id:${lead.id}`
+            if (seenLeads.has(dedupeKey)) {
+              continue
+            }
+            seenLeads.add(dedupeKey)
+            uniqueLeads.push(lead)
+            if (uniqueLeads.length >= remainingCapacity) {
+              break
+            }
+          }
+
+          if (uniqueLeads.length === 0) {
+            console.log(`⚠️ No new unique leads on page ${currentPage}`)
+          } else {
+            console.log(`🚀 Processing ${uniqueLeads.length} unique leads from page ${currentPage}`)
+            const allowCrossCampaignDuplicates = mode === 'balanced' && modes.length > 1
+            await this.enrichLeadsWithBulkMatch(uniqueLeads)
+            const processedLeads = await this.processLeads(uniqueLeads, campaign.id, userId, allowCrossCampaignDuplicates)
+            processedLeads.forEach(result => {
+              attemptLeads.push(result.record)
+              attemptRows.push(result.sheet)
+            })
+            totalLeadsProcessed = attemptLeads.length
+            await this.updateProgress(job, attempt.id, currentPage, totalLeadsProcessed, totalLeadsWritten)
+          }
+
+          if (attemptLeads.length >= campaign.maxLeads) {
+            console.log(`✅ Reached requested max leads (${campaign.maxLeads}).`)
             break
           }
 
-          // Process and save leads to database
-          const processedLeads = await this.processLeads(leads, campaign.id, userId)
-          console.log(`✅ Processed ${processedLeads.length} unique leads from page ${currentPage}`)
-          
-          totalLeadsProcessed += leads.length
-
-          // Write to Google Sheet if we have processed leads
-          if (processedLeads.length > 0) {
-            try {
-              const googleToken = campaign.user.googleTokens[0]
-              const oauth2Client = await createAuthorizedClient(
-                googleToken.accessToken,
-                googleToken.refreshToken
-              )
-
-              console.log(`📊 Writing ${processedLeads.length} leads to Google Sheet`)
-              
-              const writtenCount = await writeLeadsToSheet(
-                oauth2Client,
-                campaign.googleSheet.spreadsheetId,
-                'Sheet1!A:Z',
-                processedLeads
-              )
-
-              totalLeadsWritten += writtenCount
-              console.log(`✅ Successfully wrote ${writtenCount} leads to Google Sheet`)
-            } catch (sheetError) {
-              console.error('❌ Failed to write leads to Google Sheet:', sheetError)
-              // Don't throw - continue processing
-            }
+          if (currentPage >= totalPages) {
+            console.log(`🏁 Reached last available page (${totalPages}).`)
+            break
           }
 
-          // Update progress
-          await this.updateProgress(job, attempt.id, currentPage, totalLeadsProcessed, totalLeadsWritten)
-
-          // Check pagination
-          if (response.pagination?.has_more && response.pagination?.next_cursor) {
-            startingAfter = response.pagination.next_cursor
-            currentPage++
-          } else {
-            hasMoreLeads = false
+          if (currentPage >= maxPagesToFetch) {
+            console.log(`🛑 Hit configured page limit of ${maxPagesToFetch}. Ending search to conserve credits.`)
+            break
           }
 
-          // Check if we've reached the maximum leads limit
-          if (totalLeadsProcessed >= campaign.maxLeads) {
-            console.log(`📊 Reached maximum leads limit: ${campaign.maxLeads}`)
-            hasMoreLeads = false
-          }
+          currentPage += 1
+        }
 
-        } catch (searchError) {
-          console.error(`❌ Error on page ${currentPage}:`, searchError)
+        if (attemptLeads.length > 0) {
+          aggregatedLeads = attemptLeads
+          aggregatedSheetRows = attemptRows
+          pagesProcessed = attemptPagesProcessed
+          totalPagesReported = attemptTotalPagesReported
+          break
+        }
 
-          if (searchError instanceof InstantlyError) {
-            if (searchError.isRateLimited) {
-              // Wait longer for rate limiting
-              const backoffDelay = Math.min(60000, 5000 * Math.pow(2, currentPage - 1))
-              console.log(`⏳ Rate limited, waiting ${backoffDelay}ms before retry`)
-              await this.delay(backoffDelay)
-              continue // Retry the same page
-            } else if (!searchError.shouldRetry) {
-              // Non-retryable error
-              throw searchError
-            }
-          }
-          
-          // For other errors, try to continue with exponential backoff
-          const retryDelay = Math.min(30000, 2000 * Math.pow(2, currentPage - 1))
-          console.log(`⏳ Error encountered, waiting ${retryDelay}ms before retry`)
-          await this.delay(retryDelay)
-          
-          // If we've tried this page multiple times, move on
-          if (currentPage > 5) {
-            throw searchError
-          }
+        if (mode === 'conserve') {
+          console.log('ℹ️ Credit saver mode returned no leads; retrying with balanced coverage.')
+          totalLeadsProcessed = 0
         }
       }
 
-      // Final status update
+      totalLeadsProcessed = aggregatedLeads.length
+
+      if (aggregatedLeads.length === 0) {
+        console.log('ℹ️ No leads matched the provided filters within the page limit.')
+
+        await this.updateJobStatus(jobId, 'SUCCEEDED', {
+          finishedAt: new Date(),
+          totalPages: pagesProcessed,
+          leadsProcessed: 0,
+          leadsWritten: 0,
+          lastError: null,
+        })
+
+        await this.updateAttemptStatus(attempt.id, 'SUCCEEDED', {
+          finishedAt: new Date(),
+          pagesProcessed,
+          leadsFound: 0,
+          leadsWritten: 0,
+        })
+
+        console.log('🏁 Campaign completed with zero leads found. User will see "No leads found" message.')
+        return
+      }
+
+      try {
+        const googleToken = campaign.user.googleTokens[0]
+        const oauth2Client = await createAuthorizedClient(
+          googleToken.accessToken,
+          googleToken.refreshToken
+        )
+
+        console.log(`📊 Writing ${aggregatedSheetRows.length} leads to Google Sheet: ${campaign.googleSheet.title}`)
+
+        const writtenCount = await writeLeadsToSheet(
+          oauth2Client,
+          campaign.googleSheet.spreadsheetId,
+          'Sheet1!A:P',
+          aggregatedSheetRows
+        )
+
+        totalLeadsWritten = writtenCount
+        console.log(`✅ Successfully wrote ${writtenCount} leads to Google Sheet`)
+      } catch (sheetError) {
+        console.error('❌ Failed to write leads to Google Sheet:', sheetError)
+        await this.updateAttemptStatus(attempt.id, 'RUNNING', {
+          error: `Sheet write failed: ${sheetError instanceof Error ? sheetError.message : 'Unknown error'}`
+        })
+      }
+
       console.log(`🏁 Campaign completed: ${totalLeadsProcessed} leads processed, ${totalLeadsWritten} written to sheet`)
 
-      // Mark job as completed
       await this.updateJobStatus(jobId, 'SUCCEEDED', {
         finishedAt: new Date(),
-        totalPages: currentPage,
+        totalPages: totalPagesReported,
         leadsProcessed: totalLeadsProcessed,
         leadsWritten: totalLeadsWritten,
       })
 
       await this.updateAttemptStatus(attempt.id, 'SUCCEEDED', {
         finishedAt: new Date(),
-        pagesProcessed: currentPage,
+        pagesProcessed,
         leadsFound: totalLeadsProcessed,
         leadsWritten: totalLeadsWritten,
       })
@@ -273,67 +392,322 @@ export class LeadFetchWorker {
     for (const limiter of rateLimiters) {
       const result = await limiter.checkAndConsume(1)
       if (!result.allowed) {
-        const waitTime = result.resetTime - Date.now()
-        if (waitTime > 0) {
-          console.log(`⏳ Rate limit exceeded, waiting ${waitTime}ms`)
-          await this.delay(waitTime)
-        }
+        const waitTime = Math.max(1000, result.resetTime - Date.now())
+        console.log(`⏳ Rate limit exceeded, waiting ${waitTime}ms`)
+        await this.delay(waitTime)
       }
     }
   }
 
-  private async processLeads(leads: InstantlyLead[], campaignId: string, userId: string) {
-    const processedLeads = []
+  private async executeApolloSearchWithRetry(filters: ApolloSearchFilters, attempt: number = 1): Promise<ApolloSearchResponse> {
+    try {
+      return await apollo.searchLeads(filters)
+    } catch (error) {
+      if (error instanceof ApolloError && error.shouldRetry && attempt < 5) {
+        const waitTime = Math.min(15000, attempt * 2000)
+        console.warn(`⚠️ Apollo rate limit/server issue (attempt ${attempt}). Retrying in ${waitTime}ms...`)
+        await this.delay(waitTime)
+        return this.executeApolloSearchWithRetry(filters, attempt + 1)
+      }
+
+      throw error
+    }
+  }
+
+  private async enrichLeadsWithBulkMatch(leads: ApolloLead[]): Promise<void> {
+    const targets = leads.filter(lead => {
+      const email = lead.email ? lead.email.toLowerCase() : ''
+      const needsEmail = !email || email.includes('not_unlocked')
+      const needsPhone = !lead.phone
+      return needsEmail || needsPhone
+    })
+
+    if (targets.length === 0) {
+      return
+    }
+
+    try {
+      const payload = targets.map(lead => ({
+        identifier: lead.id,
+        first_name: lead.first_name || undefined,
+        last_name: lead.last_name || undefined,
+        title: lead.title || undefined,
+        organization_name: lead.company_name || undefined,
+        domain: this.cleanDomain(lead.domain) || undefined,
+        linkedin_url: lead.linkedin_url || undefined,
+        email: lead.email && !lead.email.includes('not_unlocked') ? lead.email : undefined,
+        city: lead.city || undefined,
+        state: lead.state || undefined,
+        country: lead.country || undefined,
+      }))
+
+      const response = await apollo.bulkMatchPeople(payload, {
+        revealPersonalEmails: true,
+        revealPhoneNumber: false,
+      })
+
+      const leadMap = new Map<string, ApolloLead>()
+      leads.forEach(lead => {
+        leadMap.set(lead.id, lead)
+      })
+
+      response.matches?.forEach(match => {
+        const identifier = match?.client_identifier || match?.id
+        if (!identifier) return
+
+        const lead = leadMap.get(identifier)
+        if (!lead) {
+          return
+        }
+
+        const person = match
+        const candidateEmails: string[] = []
+        if (typeof person.email === 'string') candidateEmails.push(person.email)
+        if (Array.isArray(person.emails)) {
+          person.emails.forEach((entry: any) => {
+            const val = entry?.value || entry?.email
+            if (val) candidateEmails.push(String(val))
+          })
+        }
+        if (Array.isArray(person.emails_raw)) {
+          person.emails_raw.forEach((entry: any) => {
+            if (typeof entry === 'string') candidateEmails.push(entry)
+          })
+        }
+
+        const unlockedEmail = candidateEmails.find(email => email && !email.includes('not_unlocked'))
+        if (unlockedEmail) {
+          lead.email = unlockedEmail.toLowerCase().trim()
+        }
+
+        const candidatePhones: string[] = []
+        if (typeof person.phone_number === 'string') candidatePhones.push(person.phone_number)
+        if (typeof person.mobile_number === 'string') candidatePhones.push(person.mobile_number)
+        if (Array.isArray(person.phone_numbers)) {
+          person.phone_numbers.forEach((entry: any) => {
+            if (typeof entry === 'string') {
+              candidatePhones.push(entry)
+            } else if (entry?.number) {
+              candidatePhones.push(entry.number)
+            }
+          })
+        }
+        const phone = candidatePhones.find(num => typeof num === 'string' && num.trim().length > 0)
+        if (phone) {
+          lead.phone = phone.trim()
+        }
+
+        if (person.linkedin_url) {
+          lead.linkedin_url = person.linkedin_url
+        }
+
+        if (person.organization?.name) {
+          lead.company_name = person.organization.name
+        }
+        if (person.organization?.website_url) {
+          lead.domain = person.organization.website_url
+        }
+        if (person.organization?.industry) {
+          lead.industry = person.organization.industry
+        }
+
+        if (person.street_address) {
+          lead.street_address = person.street_address
+        }
+        if (person.city) {
+          lead.city = person.city
+        }
+        if (person.state) {
+          lead.state = person.state
+        }
+        if (person.country) {
+          lead.country = person.country
+        }
+        if (person.postal_code) {
+          lead.postal_code = person.postal_code
+        }
+        if (person.formatted_address) {
+          lead.formatted_address = person.formatted_address
+        }
+      })
+    } catch (error) {
+      console.error('❌ Bulk match enrichment failed:', error)
+    }
+  }
+
+  private async processLeads(
+    leads: ApolloLead[],
+    campaignId: string,
+    userId: string,
+    allowCrossCampaignDuplicates: boolean = false
+  ): Promise<Array<{ record: Lead; sheet: SheetLeadRow }>> {
+    const processedLeads: Array<{ record: Lead; sheet: SheetLeadRow }> = []
 
     for (const lead of leads) {
       try {
-        // Validate email
-        if (!lead.email || !this.isValidEmail(lead.email)) {
-          console.log(`⚠️ Skipping invalid email: ${lead.email}`)
-          continue
+        let rawEmail = lead.email ? lead.email.toLowerCase().trim() : ''
+        if (!rawEmail || rawEmail.includes('not_unlocked')) {
+          const revealed = await apollo.revealEmail(lead.id)
+          if (revealed) {
+            rawEmail = revealed.toLowerCase().trim()
+            lead.email = rawEmail
+            console.log(`🔓 Revealed email for ${lead.first_name} ${lead.last_name}: ${rawEmail}`)
+          }
         }
+        const isDeliverableEmail = !!rawEmail && this.isValidEmail(rawEmail) && !rawEmail.includes('not_unlocked')
+        const normalizedEmail = isDeliverableEmail
+          ? rawEmail
+          : `${lead.id.toLowerCase()}@locked.apollo`
 
-        // Check for duplicates
+        // Check for duplicates across all campaigns for this user
         const existing = await prisma.lead.findFirst({
-          where: {
-            email: lead.email,
-            campaignId: campaignId,
-          },
+          where: allowCrossCampaignDuplicates
+            ? {
+                email: normalizedEmail,
+                campaignId,
+              }
+            : {
+                email: normalizedEmail,
+                userId: userId,
+              },
         })
 
         if (existing) {
-          console.log(`⚠️ Duplicate lead found: ${lead.email}`)
+          console.log(`⚠️ Duplicate lead found: ${lead.email} (exists in campaign ${existing.campaignId})`)
           continue
+        }
+
+        const hasValidEmail = isDeliverableEmail
+        if (!hasValidEmail) {
+          console.log(`⚠️ Email marked as locked or invalid, will blank in sheet output: ${lead.email}`)
+        }
+
+        // Validate and clean data
+        const summary = (await this.createLeadSummary(lead)).trim() || 'Summary unavailable.'
+        const finalSummary = hasValidEmail ? summary : `${summary}\nEmail address is locked in Apollo. Unlock the contact to access the email.`
+        const phone = lead.phone ? lead.phone.toString().trim() : ''
+        const streetAddress = lead.street_address ? lead.street_address.toString().trim() : ''
+        const city = lead.city ? lead.city.toString().trim() : ''
+        const state = lead.state ? lead.state.toString().trim() : ''
+        const country = lead.country ? lead.country.toString().trim() : ''
+        const postalCode = lead.postal_code ? lead.postal_code.toString().trim() : ''
+        const formattedAddress = lead.formatted_address ? lead.formatted_address.toString().trim() : ''
+
+        const cleanedData = {
+          userId,
+          campaignId,
+          email: normalizedEmail,
+          firstName: this.cleanString(lead.first_name),
+          lastName: this.cleanString(lead.last_name),
+          company: this.cleanString(lead.company_name),
+          jobTitle: this.cleanString(lead.title),
+          website: this.cleanUrl(lead.domain),
+          linkedinUrl: this.cleanUrl(lead.linkedin_url),
+          domain: this.cleanDomain(lead.domain),
+          summary: finalSummary,
+          location: this.cleanString(formattedAddress || [city, state, country].filter(Boolean).join(', ')),
+          industry: this.cleanString(lead.industry || null),
+          tags: [],
+          source: 'apollo',
+          isValid: hasValidEmail,
         }
 
         // Create lead record
         const leadRecord = await prisma.lead.create({
-          data: {
-            userId,
-            campaignId,
-            email: lead.email,
-            firstName: lead.first_name || null,
-            lastName: lead.last_name || null,
-            phone: lead.phone || null,
-            company: lead.company || null,
-            jobTitle: lead.job_title || null,
-            website: lead.website || null,
-            linkedinUrl: lead.linkedin_url || null,
-            industry: lead.industry || null,
-            location: lead.location || null,
-            tags: lead.tags || [],
-            source: 'instantly',
-          },
+          data: cleanedData,
         })
 
-        processedLeads.push(leadRecord)
+        const sheetRow: SheetLeadRow = {
+          email: sanitizeEmailForSheet(isDeliverableEmail ? rawEmail : null),
+          firstName: cleanedData.firstName || '',
+          lastName: cleanedData.lastName || '',
+          phone,
+          company: cleanedData.company || '',
+          jobTitle: cleanedData.jobTitle || '',
+          website: cleanedData.website || '',
+          linkedinUrl: cleanedData.linkedinUrl || '',
+          industry: cleanedData.industry || '',
+          streetAddress,
+          city,
+          state,
+          country,
+          postalCode,
+          formattedAddress,
+          summary: finalSummary,
+        }
+
+        processedLeads.push({ record: leadRecord, sheet: sheetRow })
+        console.log(`✅ Processed lead: ${lead.email} - ${lead.first_name} ${lead.last_name} (${lead.company_name})`)
+        
       } catch (leadError) {
         console.error(`❌ Error processing lead ${lead.email}:`, leadError)
         // Continue with next lead
       }
     }
 
+    console.log(`📊 Successfully processed ${processedLeads.length} out of ${leads.length} leads`)
     return processedLeads
+  }
+
+  private async createLeadSummary(lead: ApolloLead): Promise<string> {
+    try {
+      return await generateSmartLeadSummary({
+        firstName: lead.first_name,
+        lastName: lead.last_name,
+        title: lead.title,
+        company: lead.company_name,
+        domain: lead.domain,
+        email: lead.email,
+        linkedinUrl: lead.linkedin_url,
+      })
+    } catch (error) {
+      console.error('Gemini summary helper failed, using fallback:', error)
+      return generateLeadSummary(lead)
+    }
+  }
+
+  private cleanString(str: string | null | undefined): string | null {
+    if (!str) return null
+    const cleaned = str.toString().trim()
+    return cleaned.length > 0 ? cleaned : null
+  }
+
+  private cleanDomain(domain: string | null | undefined): string | null {
+    if (!domain) return null
+    let value = domain.toString().trim().toLowerCase()
+
+    if (!value) {
+      return null
+    }
+
+    try {
+      const parsed = new URL(value.includes('://') ? value : `https://${value}`)
+      value = parsed.hostname
+    } catch {
+      // If parsing fails, fallback to raw value without protocol/path
+      const stripped = value.replace(/^https?:\/\//, '').split('/')[0]
+      value = stripped
+    }
+
+    return value.replace(/^www\./, '') || null
+  }
+
+  private cleanUrl(url: string | null | undefined): string | null {
+    if (!url) return null
+    let cleaned = url.toString().trim()
+    
+    // Add protocol if missing
+    if (cleaned && !cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
+      cleaned = 'https://' + cleaned
+    }
+    
+    // Basic URL validation
+    try {
+      new URL(cleaned)
+      return cleaned
+    } catch {
+      return null
+    }
   }
 
   private isValidEmail(email: string): boolean {
@@ -367,7 +741,22 @@ export class LeadFetchWorker {
       page,
       leadsProcessed: processed,
       leadsWritten: written,
+      status: 'processing'
     })
+
+    // Persist progress on the campaign job for dashboard visibility
+    const jobId = job.data.jobId
+    if (jobId) {
+      await prisma.campaignJob.update({
+        where: { id: jobId },
+        data: {
+          status: 'RUNNING',
+          totalPages: Math.max(page, 1),
+          leadsProcessed: processed,
+          leadsWritten: written,
+        },
+      })
+    }
 
     // Update attempt record
     await prisma.jobAttempt.update({
@@ -378,6 +767,8 @@ export class LeadFetchWorker {
         leadsWritten: written,
       },
     })
+
+    console.log(`📊 Progress updated: Page ${page}, Processed ${processed}, Written ${written}`)
   }
 
   private async getNextAttemptNumber(jobId: string): Promise<number> {
@@ -394,6 +785,7 @@ export class LeadFetchWorker {
   }
 
   async close(): Promise<void> {
+    console.log('🛑 Closing lead fetch worker...')
     await this.worker.close()
   }
 }
@@ -403,13 +795,16 @@ let worker: LeadFetchWorker | null = null
 
 export function startWorker(): LeadFetchWorker {
   if (!worker) {
+    console.log('🚀 Starting lead fetch worker...')
     worker = new LeadFetchWorker()
+    console.log('✅ Lead fetch worker started successfully')
   }
   return worker
 }
 
 export function stopWorker(): Promise<void> {
   if (worker) {
+    console.log('🛑 Stopping lead fetch worker...')
     return worker.close()
   }
   return Promise.resolve()

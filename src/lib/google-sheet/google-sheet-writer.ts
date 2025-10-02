@@ -1,12 +1,12 @@
 // src/lib/google-sheet-writer.ts
 import { google } from 'googleapis'
-import { Lead } from '@prisma/client'
+import { LEAD_SHEET_COLUMNS, SheetLeadRow } from '../utils'
 
 export async function writeLeadsToSheet(
   oauth2Client: any,
   spreadsheetId: string,
   range: string,
-  leads: Lead[],
+  rows: SheetLeadRow[],
   batchSize: number = 50
 ): Promise<number> {
   const sheets = google.sheets({ version: 'v4', auth: oauth2Client })
@@ -16,8 +16,8 @@ export async function writeLeadsToSheet(
   await ensureHeaders(sheets, spreadsheetId, range)
 
   // Process leads in batches
-  for (let i = 0; i < leads.length; i += batchSize) {
-    const batch = leads.slice(i, i + batchSize)
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize)
     const values = batch.map(leadToSheetRow)
 
     try {
@@ -35,11 +35,11 @@ export async function writeLeadsToSheet(
       console.log(`Written ${batch.length} leads to sheet (total: ${totalWritten})`)
 
       // Small delay between batches to avoid rate limiting
-      if (i + batchSize < leads.length) {
+      if (i + batchSize < rows.length) {
         await new Promise(resolve => setTimeout(resolve, 1000))
       }
 
-    } catch (error) {
+    } catch (error:any) {
       console.error(`Failed to write batch starting at index ${i}:`, error)
       
       // Check if it's an authentication scope error
@@ -63,40 +63,27 @@ async function ensureHeaders(sheets: any, spreadsheetId: string, range: string) 
     // Check if there are any values in the first row
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A1:Z1`, // First row
+      range: `${sheetName}!A1:P1`, // First row
     })
 
-    if (!response.data.values || response.data.values.length === 0) {
-      // No headers exist, add them
-      const headers = [
-        'Email',
-        'First Name',
-        'Last Name',
-        'Phone',
-        'Company',
-        'Job Title',
-        'Website',
-        'LinkedIn URL',
-        'Industry',
-        'Location',
-        'Tags',
-        'Source',
-        'Created At',
-        'Updated At',
-      ]
+    const existingHeaders = response.data.values?.[0]
+    const headersMatch = Array.isArray(existingHeaders)
+      && existingHeaders.length >= LEAD_SHEET_COLUMNS.length
+      && LEAD_SHEET_COLUMNS.every((col, index) => (existingHeaders[index] || '').toString().trim().toLowerCase() === col.toLowerCase())
 
+    if (!headersMatch) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${sheetName}!A1:N1`,
+        range: `${sheetName}!A1:P1`,
         valueInputOption: 'RAW',
         requestBody: {
-          values: [headers],
+          values: [LEAD_SHEET_COLUMNS],
         },
       })
 
       console.log(`Added headers to spreadsheet ${spreadsheetId} in sheet ${sheetName}`)
     }
-  } catch (error) {
+  } catch (error:any) {
     console.error('Failed to ensure headers:', error)
     
     // Check if it's an authentication scope error
@@ -109,22 +96,24 @@ async function ensureHeaders(sheets: any, spreadsheetId: string, range: string) 
   }
 }
 
-function leadToSheetRow(lead: Lead): string[] {
+function leadToSheetRow(lead: SheetLeadRow): string[] {
   return [
-    lead.email || '',
-    lead.firstName || '',
-    lead.lastName || '',
-    lead.phone || '',
-    lead.company || '',
-    lead.jobTitle || '',
-    lead.website || '',
-    lead.linkedinUrl || '',
-    lead.industry || '',
-    lead.location || '',
-    lead.tags.join(', '),
-    lead.source || '',
-    lead.createdAt.toISOString(),
-    lead.updatedAt.toISOString(),
+    lead.email,
+    lead.firstName,
+    lead.lastName,
+    lead.phone,
+    lead.company,
+    lead.jobTitle,
+    lead.website,
+    lead.linkedinUrl,
+    lead.industry,
+    lead.streetAddress,
+    lead.city,
+    lead.state,
+    lead.country,
+    lead.postalCode,
+    lead.formattedAddress,
+    lead.summary,
   ]
 }
 
@@ -182,4 +171,3 @@ export async function getSheetInfo(oauth2Client: any, spreadsheetId: string) {
 
   return response.data
 }
-

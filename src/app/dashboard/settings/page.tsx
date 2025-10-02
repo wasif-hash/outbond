@@ -40,38 +40,7 @@ const INTEGRATIONS: Integration[] = [
     configurable: true,
     id: "google-sheets",
   },
-  {
-    name: "Instantly",
-    description: "Email delivery and tracking",
-    status: "connected",
-    icon: "📧",
-    configurable: true,
-    id: "instantly",
-  },
-  {
-    name: "Calendly",
-    description: "Meeting booking and scheduling",
-    status: "connected",
-    icon: "📅",
-    configurable: true,
-    id: "calendly",
-  },
-  {
-    name: "Slack",
-    description: "Notifications and team updates",
-    status: "pending",
-    icon: "💬",
-    configurable: false,
-    id: "slack",
-  },
-  {
-    name: "Apollo",
-    description: "Lead enrichment and data sourcing",
-    status: "coming-soon",
-    icon: "🚀",
-    configurable: false,
-    id: "apollo",
-  },
+  
 ];
 
 const suppressionList = [

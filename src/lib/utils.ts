@@ -2,6 +2,124 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
 import crypto from 'crypto'
+import { ApolloLead } from './apollo'
+
+export const LEAD_SHEET_COLUMNS = [
+  'Email',
+  'First Name',
+  'Last Name',
+  'Phone',
+  'Company',
+  'Job Title',
+  'Website',
+  'LinkedIn URL',
+  'Industry',
+  'Street Address',
+  'City',
+  'State',
+  'Country',
+  'Postal Code',
+  'Formatted Address',
+  'Summary'
+]
+
+export function formatLocation(location: { city?: string; state?: string; country?: string }) {
+  const parts = []
+  if (location.city) parts.push(location.city)
+  if (location.state) parts.push(location.state)
+  if (location.country) parts.push(location.country)
+  return parts.join(', ')
+}
+
+export function generateLeadSummary(lead: ApolloLead): string {
+  const lines: string[] = []
+
+  const name = `${lead.first_name || ''} ${lead.last_name || ''}`.trim() || 'This contact'
+  const company = lead.company_name || 'their organisation'
+
+  if (lead.title) {
+    lines.push(`${name} serves as ${lead.title} at ${company}.`)
+  } else {
+    lines.push(`${name} is associated with ${company}.`)
+  }
+
+  if (lead.domain) {
+    lines.push(`Company web presence: ${lead.domain}.`)
+  }
+
+  if (lead.linkedin_url) {
+    lines.push(`LinkedIn profile: ${lead.linkedin_url}.`)
+  }
+
+  if (lead.email) {
+    lines.push(`Primary contact email: ${lead.email}.`)
+  }
+
+  if (lines.length < 2) {
+    lines.push('Additional enrichment is recommended to personalise outreach.')
+  }
+
+  return lines.slice(0, 4).join('\n')
+}
+
+const GENERIC_EMAIL_LOCALS = new Set(['example', 'test', 'testing', 'demo', 'sample', 'unknown', 'noemail'])
+const GENERIC_EMAIL_DOMAINS = new Set(['example.com', 'test.com'])
+const DISPOSABLE_EMAIL_DOMAINS = new Set([
+  'mailinator.com',
+  'tempmail.com',
+  '10minutemail.com',
+  'guerrillamail.com',
+  'fakemail.com'
+])
+
+export function sanitizeEmailForSheet(email?: string | null): string {
+  if (!email) return ''
+
+  const normalized = email.toLowerCase().trim()
+
+  if (!isValidEmail(normalized)) {
+    return ''
+  }
+
+  const [local, domain] = normalized.split('@')
+
+  if (!local || !domain) {
+    return ''
+  }
+
+  if (normalized.includes('not_unlocked')) {
+    return ''
+  }
+
+  if (GENERIC_EMAIL_LOCALS.has(local) || GENERIC_EMAIL_DOMAINS.has(domain)) {
+    return ''
+  }
+
+  if (DISPOSABLE_EMAIL_DOMAINS.has(domain) || domain.includes('mailinator')) {
+    return ''
+  }
+
+  return normalized
+}
+
+export interface SheetLeadRow {
+  email: string
+  firstName: string
+  lastName: string
+  phone: string
+  company: string
+  jobTitle: string
+  website: string
+  linkedinUrl: string
+  industry: string
+  streetAddress: string
+  city: string
+  state: string
+  country: string
+  postalCode: string
+  formattedAddress: string
+  summary: string
+}
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -33,6 +151,8 @@ export function formatCampaignStatus(status: string): { label: string; variant: 
       return { label: 'Completed', variant: 'positive' }
     case 'FAILED':
       return { label: 'Failed', variant: 'negative' }
+    case 'RATE_LIMITED':
+      return { label: 'Rate Limited', variant: 'neutral' }
     case 'CANCELLED':
       return { label: 'Cancelled', variant: 'neutral' }
     default:
@@ -44,23 +164,6 @@ export function formatCampaignStatus(status: string): { label: string; variant: 
 export function calculateRetryDelay(attemptNumber: number, baseDelay: number = 3000, maxDelay: number = 300000): number {
   const delay = baseDelay * Math.pow(2, attemptNumber - 1)
   return Math.min(delay, maxDelay)
-}
-
-// Sanitize search parameters for Instantly API
-export function sanitizeSearchParams(params: {
-  niche?: string
-  keywords?: string
-  location?: string
-}): {
-  niche: string
-  keywords?: string
-  location?: string
-} {
-  return {
-    niche: params.niche?.trim() || '',
-    keywords: params.keywords?.trim() || undefined,
-    location: params.location?.trim() || undefined,
-  }
 }
 
 // Generate secure random string
@@ -121,27 +224,84 @@ export function formatRelativeTime(date: Date): string {
 }
 
 // Validate campaign data
-export function validateCampaignData(data: any): { valid: boolean; errors: string[] } {
+interface CampaignData {
+  name: string
+  jobTitles: string[]
+  keywords: string
+  locations: string[]
+  googleSheetId: string
+  maxLeads: number
+  pageSize?: number
+  includeDomains?: string
+  excludeDomains?: string
+  searchMode?: 'balanced' | 'conserve'
+}
+
+export function validateCampaignData(data: CampaignData): { valid: boolean; errors: string[] } {
   const errors: string[] = []
 
-  if (!data.name || data.name.trim().length === 0) {
+  if (!data.name?.trim()) {
     errors.push('Campaign name is required')
   }
 
-  if (!data.nicheOrJobTitle || data.nicheOrJobTitle.trim().length === 0) {
-    errors.push('Niche or job title is required')
+  if (!Array.isArray(data.jobTitles) || data.jobTitles.length === 0 ||
+      (data.jobTitles.length === 1 && !data.jobTitles[0].trim())) {
+    errors.push('At least one job title is required')
   }
 
-  if (!data.location || data.location.trim().length === 0) {
-    errors.push('Location is required')
+  if (!Array.isArray(data.locations) || data.locations.length === 0 ||
+      (data.locations.length === 1 && !data.locations[0].trim())) {
+    errors.push('At least one location is required')
   }
 
-  if (!data.googleSheetId || data.googleSheetId.trim().length === 0) {
+  // Additional validation for job titles and locations
+  if (Array.isArray(data.jobTitles)) {
+    const titles = typeof data.jobTitles[0] === 'string' 
+      ? data.jobTitles[0].split(',').map(t => t.trim()).filter(Boolean)
+      : data.jobTitles.map(t => t.trim()).filter(Boolean)
+      
+    if (titles.length === 0) {
+      errors.push('At least one valid job title is required')
+    }
+  }
+
+  if (Array.isArray(data.locations)) {
+    const locs = typeof data.locations[0] === 'string'
+      ? data.locations[0].split(',').map(l => l.trim()).filter(Boolean)
+      : data.locations.map(l => l.trim()).filter(Boolean)
+      
+    if (locs.length === 0) {
+      errors.push('At least one valid location is required')
+    }
+  }
+
+  if (!data.googleSheetId) {
     errors.push('Google Sheet selection is required')
   }
 
-  if (data.maxLeads && (isNaN(data.maxLeads) || data.maxLeads <= 0 || data.maxLeads > 10000)) {
+  if (data.maxLeads < 1 || data.maxLeads > 10000) {
     errors.push('Max leads must be between 1 and 10,000')
+  }
+
+  if (typeof data.pageSize !== 'undefined') {
+    if (data.pageSize < 1 || data.pageSize > 100) {
+      errors.push('Leads per request must be between 1 and 100')
+    }
+  }
+
+  // Validate domains format if provided
+  if (data.includeDomains) {
+    const domains = data.includeDomains.split(',').map(d => d.trim())
+    if (domains.some(d => !d.includes('.'))) {
+      errors.push('Include domains must be valid domain names (e.g., example.com)')
+    }
+  }
+
+  if (data.excludeDomains) {
+    const domains = data.excludeDomains.split(',').map(d => d.trim())
+    if (domains.some(d => !d.includes('.'))) {
+      errors.push('Exclude domains must be valid domain names (e.g., example.com)')
+    }
   }
 
   return {

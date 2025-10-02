@@ -2,6 +2,65 @@
 import { redis } from './queue'
 import { prisma } from './prisma'
 
+export class RateLimiter {
+  private tokens: number
+  private lastRefill: number
+  private maxTokens: number
+  private refillRate: number
+  private refillTime: number
+
+  constructor(tokensPerSecond: number, refillTime: number = 1000, maxBurst: number = tokensPerSecond) {
+    this.tokens = maxBurst
+    this.lastRefill = Date.now()
+    this.maxTokens = maxBurst
+    this.refillRate = tokensPerSecond
+    this.refillTime = refillTime
+  }
+
+  async acquire(tokens: number = 1): Promise<void> {
+    const now = Date.now()
+    const timePassed = now - this.lastRefill
+    
+    if (timePassed >= this.refillTime) {
+      // Calculate how many tokens to add based on time passed
+      const refills = Math.floor(timePassed / this.refillTime)
+      this.tokens = Math.min(
+        this.maxTokens,
+        this.tokens + (refills * this.refillRate)
+      )
+      this.lastRefill = now
+    }
+
+    if (this.tokens < tokens) {
+      // Calculate wait time needed for enough tokens
+      const tokensNeeded = tokens - this.tokens
+      const waitTime = Math.ceil(
+        (tokensNeeded / this.refillRate) * this.refillTime
+      )
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+      return this.acquire(tokens)
+    }
+
+    this.tokens -= tokens
+  }
+
+  async check(): Promise<boolean> {
+    const now = Date.now()
+    const timePassed = now - this.lastRefill
+    
+    if (timePassed >= this.refillTime) {
+      const refills = Math.floor(timePassed / this.refillTime)
+      this.tokens = Math.min(
+        this.maxTokens,
+        this.tokens + (refills * this.refillRate)
+      )
+      this.lastRefill = now
+    }
+
+    return this.tokens >= 1
+  }
+}
+
 export interface RateLimitConfig {
   maxTokens: number
   refillRate: number // tokens per second
@@ -87,13 +146,6 @@ export class TokenBucketRateLimit {
     return Math.min(this.config.maxTokens, currentTokens + tokensToAdd)
   }
 }
-
-// Pre-configured rate limiters
-export const globalInstantlyRateLimit = new TokenBucketRateLimit({
-  key: 'global:instantly',
-  maxTokens: 100, // 100 requests
-  refillRate: 10, // 10 requests per second
-})
 
 export const createUserRateLimit = (userId: string) => new TokenBucketRateLimit({
   key: `user:${userId}`,

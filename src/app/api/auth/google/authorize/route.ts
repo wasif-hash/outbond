@@ -3,7 +3,7 @@ import { NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import crypto from "crypto"
 import jwt from "jsonwebtoken"
-import { newOAuth2Client } from "@/lib/google-auth"
+import { newOAuth2Client } from "@/lib/google-sheet/google-auth"
 import { requireAdmin } from "@/lib/auth"
 
 export const POST = requireAdmin(async (_req, _ctx, user) => {

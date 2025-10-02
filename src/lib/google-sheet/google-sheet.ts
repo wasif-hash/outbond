@@ -1,7 +1,7 @@
 import { google } from 'googleapis';
 import { newOAuth2Client } from './google-auth';
 import { GoogleOAuthToken } from '@prisma/client';
-import { prisma } from './prisma'; // Use your existing prisma instance
+import { prisma } from '../prisma'; // Use your existing prisma instance
 import { GoogleSpreadsheet } from '@/types/google-sheet';
 
 

@@ -75,9 +75,11 @@ model Campaign {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   name            String
-  nicheOrJobTitle String
-  keywords        String // comma separated
-  location        String
+  nicheOrJobTitle String // Comma-separated job titles
+  keywords        String // Comma-separated keywords
+  location        String // Comma-separated locations
+  includeDomains  String? // Comma-separated domain whitelist
+  excludeDomains  String? // Comma-separated domain blacklist
 
   // Google Sheet info
   googleSheetId String
@@ -85,8 +87,10 @@ model Campaign {
 
   // Configuration
   maxLeads Int     @default(1000)
-  pageSize Int     @default(50)
+  pageSize Int     @default(25) // Apollo default page size
   isActive Boolean @default(true)
+  source   String  @default("apollo") // Source of campaign data provider
+  searchMode String @default("balanced") // balanced, conserve
 
   // Metadata
   createdAt DateTime @default(now())
@@ -162,20 +166,25 @@ model Lead {
   campaignId String
   campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
-  // Lead data from Instantly
+  // Lead data
   email       String
   firstName   String?
   lastName    String?
-  phone       String?
   company     String?
   jobTitle    String?
   website     String?
   linkedinUrl String?
-  industry    String?
+  summary     String? // AI-generated summary for Apollo leads
   location    String?
+  industry    String?
+
+  // Apollo-specific fields
+  companySize        String?
+  companyLinkedinUrl String?
+  domain             String?
 
   // Metadata
-  source String   @default("instantly") // instantly, manual, import
+  source String   @default("apollo") // apollo, manual, import
   tags   String[] @default([])
 
   // Status tracking
@@ -204,7 +213,7 @@ model RateLimit {
 
 model JobLock {
   id        String   @id @default(cuid())
-  lockKey   String   @unique // campaign:campaignId, global:instantly
+  lockKey   String   @unique // campaign:campaignId, global:lead-fetch
   ownerId   String // worker/process identifier
   expiresAt DateTime
   createdAt DateTime @default(now())

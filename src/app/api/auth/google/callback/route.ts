@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { newOAuth2Client } from '@/lib/google-auth';
+import { newOAuth2Client } from '@/lib/google-sheet/google-auth';
 
 export async function GET(request: NextRequest) {
   try {

@@ -22,21 +22,29 @@ interface CreateCampaignFormProps {
 
 interface FormData {
   name: string
-  nicheOrJobTitle: string
-  keywords: string
-  location: string
+  jobTitles: string[] // Array of job titles
+  keywords: string // Comma-separated keywords
+  locations: string[] // Array of locations
   googleSheetId: string
   maxLeads: number
+  pageSize: number
+  searchMode: 'balanced' | 'conserve'
+  includeDomains?: string // Optional domain filters (comma-separated)
+  excludeDomains?: string // Optional domain exclusions (comma-separated)
 }
 
 export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCampaignFormProps) {
   const [formData, setFormData] = useState<FormData>({
     name: '',
-    nicheOrJobTitle: '',
+    jobTitles: [''],
     keywords: '',
-    location: '',
+    locations: [''],
     googleSheetId: '',
     maxLeads: 1000,
+    pageSize: 25,
+    searchMode: 'balanced',
+    includeDomains: '',
+    excludeDomains: ''
   })
   const [submitting, setSubmitting] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
@@ -68,10 +76,26 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
     }
   }, [status, spreadsheets.length])
 
-  const handleInputChange = (field: keyof FormData, value: string | number) => {
-    setFormData(prev => ({ ...prev, [field]: value }))
+  const handleInputChange = (field: keyof FormData, value: string | number | string[]) => {
+    setFormData(prev => {
+      if (field === 'pageSize' && typeof value === 'number' && prev.searchMode === 'conserve') {
+        return { ...prev, pageSize: Math.min(value, 15) }
+      }
+      return { ...prev, [field]: value } as FormData
+    })
     if (errors.length > 0) {
       setErrors([]) // Clear errors when user starts typing
+    }
+  }
+
+  const handleSearchModeChange = (mode: 'balanced' | 'conserve') => {
+    setFormData(prev => ({
+      ...prev,
+      searchMode: mode,
+      pageSize: mode === 'conserve' ? Math.min(prev.pageSize, 15) : prev.pageSize
+    }))
+    if (errors.length > 0) {
+      setErrors([])
     }
   }
 
@@ -89,12 +113,36 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
       setSubmitting(true)
       setErrors([])
 
+      // Format data for API submission
+      const jobTitlesArray = (typeof formData.jobTitles[0] === 'string' 
+        ? formData.jobTitles[0].split(',') 
+        : formData.jobTitles
+      ).map((t: string) => t.trim()).filter(Boolean)
+
+      const locationsArray = (typeof formData.locations[0] === 'string'
+        ? formData.locations[0].split(',')
+        : formData.locations
+      ).map((l: string) => l.trim()).filter(Boolean)
+
+      const apiFormData = {
+        name: formData.name.trim(),
+        jobTitles: jobTitlesArray,
+        locations: locationsArray,
+        keywords: formData.keywords?.trim() || '',
+        maxLeads: formData.maxLeads || 1000,
+        pageSize: formData.pageSize || 25,
+        searchMode: formData.searchMode,
+        googleSheetId: formData.googleSheetId,
+        includeDomains: formData.includeDomains?.trim() || undefined,
+        excludeDomains: formData.excludeDomains?.trim() || undefined,
+      }
+
       const response = await fetch('/api/campaigns', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(apiFormData),
       })
 
       if (!response.ok) {
@@ -104,18 +152,22 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
 
       const data = await response.json()
       
-      toast.success('Campaign created! Lead fetching has started.')
+      toast.success('Campaign created! Apollo lead fetching has started.')
       onSuccess(data.campaign)
       onOpenChange(false)
       
       // Reset form
       setFormData({
         name: '',
-        nicheOrJobTitle: '',
+        jobTitles: [''],
         keywords: '',
-        location: '',
+        locations: [''],
         googleSheetId: '',
         maxLeads: 1000,
+        pageSize: 25,
+        searchMode: 'balanced',
+        includeDomains: '',
+        excludeDomains: ''
       })
 
     } catch (error) {
@@ -139,6 +191,9 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
       <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-xl font-mono">Create New Campaign</DialogTitle>
+          <p className="text-sm text-muted-foreground">
+            Configure Apollo search filters. We will fetch leads and append them to your Google Sheet automatically.
+          </p>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -170,14 +225,21 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="nicheOrJobTitle">Niche / Job Title *</Label>
-              <Input
-                id="nicheOrJobTitle"
-                value={formData.nicheOrJobTitle}
-                onChange={(e) => handleInputChange('nicheOrJobTitle', e.target.value)}
-                placeholder="e.g., CEO, Marketing Director, Software Engineer"
+              <Label htmlFor="jobTitles">Job Titles (comma-separated) *</Label>
+              <Textarea
+                id="jobTitles"
+                value={formData.jobTitles.join(', ')}
+                onChange={(e) => {
+                  const titles = e.target.value.split(',').map(t => t.trim()).filter(Boolean);
+                  handleInputChange('jobTitles', titles);
+                }}
+                placeholder="e.g., CEO, Marketing Director, VP of Sales"
+                rows={2}
                 required
               />
+              <p className="text-sm text-muted-foreground">
+                Enter target job titles. Multiple variations can help find more leads.
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -190,19 +252,52 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
                 rows={3}
               />
               <p className="text-sm text-muted-foreground">
-                Enter relevant keywords to refine your lead search. These will be used to find companies in your target industry.
+                Enter relevant keywords to refine your lead search.
               </p>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="location">Location *</Label>
-              <Input
-                id="location"
-                value={formData.location}
-                onChange={(e) => handleInputChange('location', e.target.value)}
-                placeholder="e.g., United States, California, New York"
+              <Label htmlFor="locations">Locations (comma-separated) *</Label>
+              <Textarea
+                id="locations"
+                value={formData.locations.join(', ')}
+                onChange={(e) => {
+                  const locs = e.target.value.split(',').map(l => l.trim()).filter(Boolean);
+                  handleInputChange('locations', locs);
+                }}
+                placeholder="e.g., California, US; New York, US; Toronto, Canada"
+                rows={2}
                 required
               />
+              <p className="text-sm text-muted-foreground">
+                Enter target locations in format: City, Country or State, Country
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="includeDomains">Include Domains (comma-separated)</Label>
+              <Input
+                id="includeDomains"
+                value={formData.includeDomains}
+                onChange={(e) => handleInputChange('includeDomains', e.target.value)}
+                placeholder="e.g., company1.com, company2.com"
+              />
+              <p className="text-sm text-muted-foreground">
+                Optional: Only include leads from these domains
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="excludeDomains">Exclude Domains (comma-separated)</Label>
+              <Input
+                id="excludeDomains"
+                value={formData.excludeDomains}
+                onChange={(e) => handleInputChange('excludeDomains', e.target.value)}
+                placeholder="e.g., competitor1.com, competitor2.com"
+              />
+              <p className="text-sm text-muted-foreground">
+                Optional: Exclude leads from these domains
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -218,6 +313,49 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
               <p className="text-sm text-muted-foreground">
                 Maximum number of leads to fetch (1-10,000)
               </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="pageSize">Leads Per Request</Label>
+              <Input
+                id="pageSize"
+                type="number"
+                min="1"
+                max="100"
+                value={formData.pageSize}
+                onChange={(e) => handleInputChange('pageSize', Math.max(1, Math.min(100, parseInt(e.target.value) || 25)))}
+              />
+              <p className="text-sm text-muted-foreground">
+                How many leads to request from Apollo per API call (1-100). Smaller batches help avoid rate limits.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Credit Usage Mode</Label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {[{
+                  value: 'balanced' as const,
+                  title: 'Balanced coverage',
+                  description: 'Requests larger pages and scans deeper to maximise leads.'
+                }, {
+                  value: 'conserve' as const,
+                  title: 'Credit saver',
+                  description: 'Uses smaller page sizes, caps search depth, and stops sooner when results dry up.'
+                }].map(option => {
+                  const isActive = formData.searchMode === option.value
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => handleSearchModeChange(option.value)}
+                      className={`text-left border rounded-md p-3 transition-colors ${isActive ? 'border-blue-500 bg-blue-50' : 'border-border hover:border-blue-200'}`}
+                    >
+                      <div className="font-medium text-sm">{option.title}</div>
+                      <p className="text-xs text-muted-foreground mt-1">{option.description}</p>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
 
@@ -256,7 +394,7 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
                   <div className="text-sm text-muted-foreground">Loading Google Sheets...</div>
                 ) : spreadsheets.length === 0 ? (
                   <div className="text-sm text-muted-foreground">
-                    No spreadsheets found. Create a Google Sheet first or click "Fetch Spreadsheets" above.
+                    No spreadsheets found. Create a Google Sheet first or click the Fetch Spreadsheets button above.
                   </div>
                 ) : (
                   <Select 
@@ -308,7 +446,7 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
               disabled={submitting || !isConnected || !formData.googleSheetId}
               className="min-w-[120px]"
             >
-              {submitting ? 'Creating...' : 'Create Campaign'}
+              {submitting ? 'Launching...' : 'Create Campaign'}
             </Button>
           </div>
         </form>
