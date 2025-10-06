@@ -1,23 +1,25 @@
 // src/components/CreateCampaignForm.tsx
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import axios from 'axios'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { toast } from 'react-hot-toast'
+import { toast } from 'sonner'
 import { validateCampaignData } from '@/lib/utils'
 import { useGoogleSheets } from '@/hooks/useGoogleSheet'
 import { ConnectionStatus } from '@/components/google-sheet/ConnectionStatus'
 import { ConnectionActions } from '@/components/google-sheet/ConnectionActions'
+import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
 
 interface CreateCampaignFormProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSuccess: (campaign: any) => void
+  onSuccess: (campaign: unknown) => void
 }
 
 interface FormData {
@@ -48,6 +50,8 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
   })
   const [submitting, setSubmitting] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
+  const client = useMemo(() => getApiClient(), [])
+  const submitCancelRef = useRef<CancelTokenSource | null>(null)
 
   const { 
     status,
@@ -66,6 +70,7 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
     if (open) {
       checkConnectionStatus()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   // Fetch spreadsheets when connected
@@ -74,7 +79,12 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
       console.log('Status is connected, fetching spreadsheets...')
       fetchSpreadsheets()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, spreadsheets.length])
+
+  useEffect(() => () => {
+    submitCancelRef.current?.cancel('Component unmounted')
+  }, [])
 
   const handleInputChange = (field: keyof FormData, value: string | number | string[]) => {
     setFormData(prev => {
@@ -106,12 +116,19 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
     const validation = validateCampaignData(formData)
     if (!validation.valid) {
       setErrors(validation.errors)
+      if (validation.errors.length > 0) {
+        toast.error(validation.errors[0])
+      }
       return
     }
 
     try {
       setSubmitting(true)
       setErrors([])
+
+      if (submitCancelRef.current) {
+        submitCancelRef.current.cancel('Superseded submission')
+      }
 
       // Format data for API submission
       const jobTitlesArray = (typeof formData.jobTitles[0] === 'string' 
@@ -137,20 +154,12 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
         excludeDomains: formData.excludeDomains?.trim() || undefined,
       }
 
-      const response = await fetch('/api/campaigns', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(apiFormData),
+      const cancelSource = createCancelSource()
+      submitCancelRef.current = cancelSource
+
+      const { data } = await client.post('/api/campaigns', apiFormData, {
+        cancelToken: cancelSource.token,
       })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to create campaign')
-      }
-
-      const data = await response.json()
       
       toast.success('Campaign created! Apollo lead fetching has started.')
       onSuccess(data.campaign)
@@ -171,11 +180,19 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
       })
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to create campaign'
+      if (axios.isCancel(error)) {
+        return
+      }
+      const errorMessage = axios.isAxiosError(error)
+        ? (error.response?.data?.error as string) || error.message || 'Failed to create campaign'
+        : error instanceof Error
+          ? error.message
+          : 'Failed to create campaign'
       toast.error(errorMessage)
       setErrors([errorMessage])
     } finally {
       setSubmitting(false)
+      submitCancelRef.current = null
     }
   }
 

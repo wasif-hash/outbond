@@ -1,11 +1,11 @@
 // src/lib/worker.ts
 import { Worker, Job } from 'bullmq'
-import type { Lead } from '@prisma/client'
+import type { Lead, Prisma } from '@prisma/client'
 import { redis, LeadFetchJobData } from './queue'
 import { prisma } from './prisma'
 import { apollo, ApolloError, ApolloSearchFilters, ApolloLead, ApolloSearchResponse } from './apollo'
 import { generateSmartLeadSummary } from './gemini'
-import { generateLeadSummary, SheetLeadRow, sanitizeEmailForSheet } from './utils'
+import { generateLeadSummary, SheetLeadRow, sanitizeEmailForSheet, chunkArray } from './utils'
 import { 
   createUserRateLimit, 
   createCampaignRateLimit, 
@@ -14,6 +14,21 @@ import {
 
 import { createAuthorizedClient } from './google-sheet/google-sheet'
 import { writeLeadsToSheet } from './google-sheet/google-sheet-writer'
+
+const parsedPreparationConcurrency = Number(process.env.LEAD_PREPARATION_CONCURRENCY || '5')
+const LEAD_PREPARATION_CONCURRENCY = Number.isFinite(parsedPreparationConcurrency) && parsedPreparationConcurrency > 0
+  ? Math.floor(parsedPreparationConcurrency)
+  : 5
+const parsedInsertBatchSize = Number(process.env.LEAD_INSERT_BATCH_SIZE || '500')
+const LEAD_INSERT_BATCH_SIZE = Number.isFinite(parsedInsertBatchSize) && parsedInsertBatchSize >= 50
+  ? Math.floor(parsedInsertBatchSize)
+  : 500
+
+type PreparedLead = {
+  lookupKey: string
+  dbData: Prisma.LeadCreateManyInput
+  sheetRow: SheetLeadRow
+}
 
 export class LeadFetchWorker {
   private worker: Worker
@@ -69,17 +84,6 @@ export class LeadFetchWorker {
       // Update job status to running
       await this.updateJobStatus(jobId, 'RUNNING', { startedAt: new Date() })
 
-      // Create job attempt record
-      const attempt = await prisma.jobAttempt.create({
-        data: {
-          campaignJobId: jobId,
-          attemptNumber: await this.getNextAttemptNumber(jobId),
-          status: 'RUNNING',
-        },
-      })
-
-      console.log(`📝 Created job attempt ${attempt.id} (attempt #${attempt.attemptNumber})`)
-
       // Get campaign details
       const campaign = await prisma.campaign.findUnique({
         where: { id: campaignId },
@@ -94,12 +98,30 @@ export class LeadFetchWorker {
       })
 
       if (!campaign) {
-        throw new Error(`Campaign ${campaignId} not found`)
+        console.warn(`⚠️ Campaign ${campaignId} no longer exists. Cancelling job ${jobId}.`)
+        await this.cancelJobExecution(job, jobId, null, `Campaign ${campaignId} not found`)
+        return
+      }
+
+      if (!campaign.isActive) {
+        console.warn(`⏸️ Campaign ${campaignId} is inactive. Cancelling job ${jobId}.`)
+        await this.cancelJobExecution(job, jobId, null, 'Campaign is paused')
+        return
       }
 
       if (!campaign.user.googleTokens[0]) {
         throw new Error(`No Google token found for user ${userId}`)
       }
+
+      const attempt = await prisma.jobAttempt.create({
+        data: {
+          campaignJobId: jobId,
+          attemptNumber: await this.getNextAttemptNumber(jobId),
+          status: 'RUNNING',
+        },
+      })
+
+      console.log(`📝 Created job attempt ${attempt.id} (attempt #${attempt.attemptNumber})`)
 
       console.log(`📋 Processing campaign: ${campaign.name}`)
       console.log(`📊 Target: ${campaign.nicheOrJobTitle} in ${campaign.location}`)
@@ -170,6 +192,11 @@ export class LeadFetchWorker {
         console.log(`🛡️ Page fetch ceiling set to ${maxPagesToFetch} pages (${mode === 'conserve' ? 'credit saver' : 'balanced'} mode)`)
 
         while (attemptLeads.length < campaign.maxLeads) {
+          const campaignStillActive = await this.verifyCampaignIsActive(campaignId, job, jobId, attempt.id, 'pagination loop')
+          if (!campaignStillActive) {
+            return
+          }
+
           await this.checkRateLimits([userRateLimit, campaignRateLimit])
 
           const searchFilters: ApolloSearchFilters = {
@@ -293,6 +320,11 @@ export class LeadFetchWorker {
 
       totalLeadsProcessed = aggregatedLeads.length
 
+      const activeAfterFetch = await this.verifyCampaignIsActive(campaignId, job, jobId, attempt.id, 'post-fetch')
+      if (!activeAfterFetch) {
+        return
+      }
+
       if (aggregatedLeads.length === 0) {
         console.log('ℹ️ No leads matched the provided filters within the page limit.')
 
@@ -312,6 +344,11 @@ export class LeadFetchWorker {
         })
 
         console.log('🏁 Campaign completed with zero leads found. User will see "No leads found" message.')
+        return
+      }
+
+      const stillActiveBeforeWrite = await this.verifyCampaignIsActive(campaignId, job, jobId, attempt.id, 'before sheet write')
+      if (!stillActiveBeforeWrite) {
         return
       }
 
@@ -379,6 +416,8 @@ export class LeadFetchWorker {
           error: errorMessage,
         })
       }
+
+      await job.discard()
 
       throw error // Re-throw to mark job as failed in BullMQ
     } finally {
@@ -535,118 +574,385 @@ export class LeadFetchWorker {
     }
   }
 
+  private async cancelJobExecution(
+    job: Job,
+    jobId: string,
+    attemptId: string | null,
+    reason: string
+  ): Promise<void> {
+    const now = new Date()
+
+    const existingProgress = typeof job.progress === 'object' && job.progress !== null
+      ? job.progress as Record<string, unknown>
+      : {}
+
+    await job.updateProgress({
+      ...existingProgress,
+      status: 'cancelled',
+      reason,
+    })
+
+    await this.updateJobStatus(jobId, 'CANCELLED', {
+      finishedAt: now,
+      lastError: reason,
+      nextRunAt: null,
+    })
+
+    if (attemptId) {
+      await this.updateAttemptStatus(attemptId, 'CANCELLED', {
+        finishedAt: now,
+        error: reason,
+      })
+    }
+  }
+
+  private async verifyCampaignIsActive(
+    campaignId: string,
+    job: Job,
+    jobId: string,
+    attemptId: string,
+    context: string
+  ): Promise<boolean> {
+    const campaignState = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { isActive: true },
+    })
+
+    if (!campaignState) {
+      console.warn(`⚠️ Campaign ${campaignId} removed during execution (${context}). Cancelling job.`)
+      await this.cancelJobExecution(job, jobId, attemptId, `Campaign removed during ${context}`)
+      return false
+    }
+
+    if (!campaignState.isActive) {
+      console.warn(`⏸️ Campaign ${campaignId} paused during execution (${context}). Cancelling job.`)
+      await this.cancelJobExecution(job, jobId, attemptId, `Campaign paused during ${context}`)
+      return false
+    }
+
+    return true
+  }
+
   private async processLeads(
     leads: ApolloLead[],
     campaignId: string,
     userId: string,
     allowCrossCampaignDuplicates: boolean = false
   ): Promise<Array<{ record: Lead; sheet: SheetLeadRow }>> {
-    const processedLeads: Array<{ record: Lead; sheet: SheetLeadRow }> = []
+    if (leads.length === 0) {
+      return []
+    }
 
-    for (const lead of leads) {
-      try {
-        let rawEmail = lead.email ? lead.email.toLowerCase().trim() : ''
-        if (!rawEmail || rawEmail.includes('not_unlocked')) {
-          const revealed = await apollo.revealEmail(lead.id)
-          if (revealed) {
-            rawEmail = revealed.toLowerCase().trim()
-            lead.email = rawEmail
-            console.log(`🔓 Revealed email for ${lead.first_name} ${lead.last_name}: ${rawEmail}`)
-          }
+    const prepared = await this.prepareLeads(leads, campaignId, userId, allowCrossCampaignDuplicates)
+
+    if (prepared.length === 0) {
+      console.log('ℹ️ No leads passed preparation after enrichment and validation checks.')
+      return []
+    }
+
+    const deduped = this.dedupePreparedLeads(prepared)
+    const toInsert = await this.filterExistingLeads(deduped, campaignId, userId, allowCrossCampaignDuplicates)
+
+    if (toInsert.length === 0) {
+      console.log('ℹ️ All prepared leads already exist for this user/campaign. Skipping insert.')
+      return []
+    }
+
+    const insertedEmailSet = new Set<string>()
+
+    for (const batch of chunkArray(toInsert, LEAD_INSERT_BATCH_SIZE)) {
+      const payload = batch.map(item => ({ ...item.dbData }))
+      const result = await prisma.lead.createMany({
+        data: payload,
+        skipDuplicates: true,
+      })
+
+      payload.forEach(item => {
+        if (item.email) {
+          insertedEmailSet.add(item.email)
         }
-        const isDeliverableEmail = !!rawEmail && this.isValidEmail(rawEmail) && !rawEmail.includes('not_unlocked')
-        const normalizedEmail = isDeliverableEmail
-          ? rawEmail
-          : `${lead.id.toLowerCase()}@locked.apollo`
+      })
 
-        // Check for duplicates across all campaigns for this user
-        const existing = await prisma.lead.findFirst({
-          where: allowCrossCampaignDuplicates
-            ? {
-                email: normalizedEmail,
-                campaignId,
-              }
-            : {
-                email: normalizedEmail,
-                userId: userId,
-              },
-        })
-
-        if (existing) {
-          console.log(`⚠️ Duplicate lead found: ${lead.email} (exists in campaign ${existing.campaignId})`)
-          continue
-        }
-
-        const hasValidEmail = isDeliverableEmail
-        if (!hasValidEmail) {
-          console.log(`⚠️ Email marked as locked or invalid, will blank in sheet output: ${lead.email}`)
-        }
-
-        // Validate and clean data
-        const summary = (await this.createLeadSummary(lead)).trim() || 'Summary unavailable.'
-        const finalSummary = hasValidEmail ? summary : `${summary}\nEmail address is locked in Apollo. Unlock the contact to access the email.`
-        const phone = lead.phone ? lead.phone.toString().trim() : ''
-        const streetAddress = lead.street_address ? lead.street_address.toString().trim() : ''
-        const city = lead.city ? lead.city.toString().trim() : ''
-        const state = lead.state ? lead.state.toString().trim() : ''
-        const country = lead.country ? lead.country.toString().trim() : ''
-        const postalCode = lead.postal_code ? lead.postal_code.toString().trim() : ''
-        const formattedAddress = lead.formatted_address ? lead.formatted_address.toString().trim() : ''
-
-        const cleanedData = {
-          userId,
-          campaignId,
-          email: normalizedEmail,
-          firstName: this.cleanString(lead.first_name),
-          lastName: this.cleanString(lead.last_name),
-          company: this.cleanString(lead.company_name),
-          jobTitle: this.cleanString(lead.title),
-          website: this.cleanUrl(lead.domain),
-          linkedinUrl: this.cleanUrl(lead.linkedin_url),
-          domain: this.cleanDomain(lead.domain),
-          summary: finalSummary,
-          location: this.cleanString(formattedAddress || [city, state, country].filter(Boolean).join(', ')),
-          industry: this.cleanString(lead.industry || null),
-          tags: [],
-          source: 'apollo',
-          isValid: hasValidEmail,
-        }
-
-        // Create lead record
-        const leadRecord = await prisma.lead.create({
-          data: cleanedData,
-        })
-
-        const sheetRow: SheetLeadRow = {
-          email: sanitizeEmailForSheet(isDeliverableEmail ? rawEmail : null),
-          firstName: cleanedData.firstName || '',
-          lastName: cleanedData.lastName || '',
-          phone,
-          company: cleanedData.company || '',
-          jobTitle: cleanedData.jobTitle || '',
-          website: cleanedData.website || '',
-          linkedinUrl: cleanedData.linkedinUrl || '',
-          industry: cleanedData.industry || '',
-          streetAddress,
-          city,
-          state,
-          country,
-          postalCode,
-          formattedAddress,
-          summary: finalSummary,
-        }
-
-        processedLeads.push({ record: leadRecord, sheet: sheetRow })
-        console.log(`✅ Processed lead: ${lead.email} - ${lead.first_name} ${lead.last_name} (${lead.company_name})`)
-        
-      } catch (leadError) {
-        console.error(`❌ Error processing lead ${lead.email}:`, leadError)
-        // Continue with next lead
+      if (result.count !== payload.length) {
+        console.warn(`⚠️ createMany skipped ${payload.length - result.count} lead(s) due to duplicates or race conditions.`)
       }
     }
 
-    console.log(`📊 Successfully processed ${processedLeads.length} out of ${leads.length} leads`)
-    return processedLeads
+    if (insertedEmailSet.size === 0) {
+      console.log('ℹ️ No new leads were inserted after deduplication. Skipping sheet write.')
+      return []
+    }
+
+    const insertedEmails = Array.from(insertedEmailSet)
+    const persistedRecords = await this.fetchLeadsByEmails(insertedEmails, campaignId)
+    const recordMap = new Map(persistedRecords.map(record => [record.email, record]))
+
+    const processed = toInsert
+      .map(item => {
+        const email = item.dbData.email
+        if (!email) {
+          return null
+        }
+        const record = recordMap.get(email)
+        if (!record) {
+          console.warn(`⚠️ Could not load lead record for email ${email} after insertion.`)
+          return null
+        }
+        return { record, sheet: item.sheetRow }
+      })
+      .filter((value): value is { record: Lead; sheet: SheetLeadRow } => Boolean(value))
+
+    console.log(`📊 Successfully processed ${processed.length} out of ${leads.length} leads`)
+    return processed
+  }
+
+  private async prepareLeads(
+    leads: ApolloLead[],
+    campaignId: string,
+    userId: string,
+    allowCrossCampaignDuplicates: boolean
+  ): Promise<PreparedLead[]> {
+    const results = await this.mapWithConcurrency(
+      leads,
+      LEAD_PREPARATION_CONCURRENCY,
+      async (lead) => {
+        try {
+          return await this.prepareLead(lead, campaignId, userId, allowCrossCampaignDuplicates)
+        } catch (error) {
+          console.error(`❌ Error preparing lead ${lead.id}:`, error)
+          return null
+        }
+      }
+    )
+
+    return results.filter((value): value is PreparedLead => Boolean(value))
+  }
+
+  private dedupePreparedLeads(prepared: PreparedLead[]): PreparedLead[] {
+    if (prepared.length <= 1) {
+      return prepared
+    }
+
+    const seen = new Set<string>()
+    const unique: PreparedLead[] = []
+
+    for (const item of prepared) {
+      if (seen.has(item.lookupKey)) {
+        continue
+      }
+      seen.add(item.lookupKey)
+      unique.push(item)
+    }
+
+    if (unique.length !== prepared.length) {
+      console.log(`ℹ️ Removed ${prepared.length - unique.length} duplicate lead(s) during in-memory deduplication.`)
+    }
+
+    return unique
+  }
+
+  private async filterExistingLeads(
+    prepared: PreparedLead[],
+    campaignId: string,
+    userId: string,
+    allowCrossCampaignDuplicates: boolean
+  ): Promise<PreparedLead[]> {
+    if (prepared.length === 0) {
+      return []
+    }
+
+    const scopeFilter = allowCrossCampaignDuplicates
+      ? { campaignId }
+      : { userId }
+
+    const emailSet = new Set<string>()
+    prepared.forEach(item => {
+      if (item.dbData.email) {
+        emailSet.add(item.dbData.email)
+      }
+    })
+
+    if (emailSet.size === 0) {
+      return []
+    }
+
+    const existingEmails = new Set<string>()
+
+    for (const chunk of chunkArray(Array.from(emailSet), 500)) {
+      const matches = await prisma.lead.findMany({
+        where: {
+          ...scopeFilter,
+          email: {
+            in: chunk,
+          },
+        },
+        select: { email: true },
+      })
+
+      matches.forEach(match => existingEmails.add(match.email))
+    }
+
+    if (existingEmails.size === 0) {
+      return prepared
+    }
+
+    const filtered = prepared.filter(item => !existingEmails.has(item.dbData.email || ''))
+
+    if (filtered.length !== prepared.length) {
+      console.log(`ℹ️ Skipped ${prepared.length - filtered.length} database duplicate lead(s).`)
+    }
+
+    return filtered
+  }
+
+  private async fetchLeadsByEmails(emails: string[], campaignId: string): Promise<Lead[]> {
+    if (!emails.length) {
+      return []
+    }
+
+    const uniqueEmails = Array.from(new Set(emails))
+    const records: Lead[] = []
+
+    for (const chunk of chunkArray(uniqueEmails, 500)) {
+      const chunkRecords = await prisma.lead.findMany({
+        where: {
+          campaignId,
+          email: {
+            in: chunk,
+          },
+        },
+      })
+      records.push(...chunkRecords)
+    }
+
+    return records
+  }
+
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T, index: number) => Promise<R>
+  ): Promise<R[]> {
+    if (items.length === 0) {
+      return []
+    }
+
+    const cappedConcurrency = Math.max(1, Math.min(concurrency, items.length))
+    const results: R[] = new Array(items.length)
+    let nextIndex = 0
+
+    const worker = async () => {
+      while (true) {
+        const currentIndex = nextIndex
+        if (currentIndex >= items.length) {
+          break
+        }
+        nextIndex += 1
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex)
+      }
+    }
+
+    await Promise.all(Array.from({ length: cappedConcurrency }, () => worker()))
+    return results
+  }
+
+  private async prepareLead(
+    lead: ApolloLead,
+    campaignId: string,
+    userId: string,
+    allowCrossCampaignDuplicates: boolean
+  ): Promise<PreparedLead | null> {
+    let rawEmail = lead.email ? lead.email.toLowerCase().trim() : ''
+
+    if (!rawEmail || rawEmail.includes('not_unlocked')) {
+      const revealed = await apollo.revealEmail(lead.id)
+      if (revealed) {
+        rawEmail = revealed.toLowerCase().trim()
+        lead.email = rawEmail
+        console.log(`🔓 Revealed email for ${lead.first_name} ${lead.last_name}: ${rawEmail}`)
+      }
+    }
+
+    const hasValidEmail = !!rawEmail && this.isValidEmail(rawEmail) && !rawEmail.includes('not_unlocked')
+    const normalizedEmail = hasValidEmail ? rawEmail : `${lead.id.toLowerCase()}@locked.apollo`
+
+    if (!hasValidEmail) {
+      console.log(`⚠️ Email marked as locked or invalid, will blank in sheet output: ${lead.email}`)
+    }
+
+    const phone = lead.phone ? lead.phone.toString().trim() : ''
+    const streetAddress = lead.street_address ? lead.street_address.toString().trim() : ''
+    const city = lead.city ? lead.city.toString().trim() : ''
+    const state = lead.state ? lead.state.toString().trim() : ''
+    const country = lead.country ? lead.country.toString().trim() : ''
+    const postalCode = lead.postal_code ? lead.postal_code.toString().trim() : ''
+    const formattedAddress = lead.formatted_address ? lead.formatted_address.toString().trim() : ''
+
+    const summary = (await this.createLeadSummary(lead)).trim() || 'Summary unavailable.'
+    const finalSummary = hasValidEmail
+      ? summary
+      : `${summary}\nEmail address is locked in Apollo. Unlock the contact to access the email.`
+
+    const website = this.cleanUrl(lead.domain)
+    const linkedinUrl = this.cleanUrl(lead.linkedin_url)
+    const domain = this.cleanDomain(lead.domain)
+    const location = this.cleanString(
+      formattedAddress || [city, state, country].filter(Boolean).join(', ')
+    )
+
+    const dbData: Prisma.LeadCreateManyInput = {
+      userId,
+      campaignId,
+      email: normalizedEmail,
+      firstName: this.cleanString(lead.first_name) ?? null,
+      lastName: this.cleanString(lead.last_name) ?? null,
+      company: this.cleanString(lead.company_name) ?? null,
+      jobTitle: this.cleanString(lead.title) ?? null,
+      website: website ?? null,
+      linkedinUrl: linkedinUrl ?? null,
+      summary: finalSummary,
+      location: location ?? null,
+      industry: this.cleanString(lead.industry || null) ?? null,
+      domain: domain ?? null,
+      tags: [],
+      source: 'apollo',
+      isValid: hasValidEmail,
+      isSuppressed: false,
+    }
+
+    const sheetRow: SheetLeadRow = {
+      email: sanitizeEmailForSheet(hasValidEmail ? rawEmail : null),
+      firstName: dbData.firstName || '',
+      lastName: dbData.lastName || '',
+      phone,
+      company: dbData.company || '',
+      jobTitle: dbData.jobTitle || '',
+      website: dbData.website || '',
+      linkedinUrl: dbData.linkedinUrl || '',
+      industry: dbData.industry || '',
+      streetAddress,
+      city,
+      state,
+      country,
+      postalCode,
+      formattedAddress,
+      summary: finalSummary,
+    }
+
+    return {
+      lookupKey: this.buildLookupKey(campaignId, userId, normalizedEmail, allowCrossCampaignDuplicates),
+      dbData,
+      sheetRow,
+    }
+  }
+
+  private buildLookupKey(
+    campaignId: string,
+    userId: string,
+    email: string,
+    allowCrossCampaignDuplicates: boolean
+  ): string {
+    return allowCrossCampaignDuplicates ? `${campaignId}:${email}` : `${userId}:${email}`
   }
 
   private async createLeadSummary(lead: ApolloLead): Promise<string> {

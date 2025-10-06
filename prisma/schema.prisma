@@ -25,6 +25,8 @@ model User {
 
   googleTokens GoogleOAuthToken[]
   googleSheets GoogleSheet[]
+  gmailAccounts GmailAccount[]
+  emailSendJobs EmailSendJob[]
   campaigns    Campaign[]
   leads        Lead[]
 
@@ -99,6 +101,7 @@ model Campaign {
   // Relations
   campaignJobs CampaignJob[]
   leads        Lead[]
+  emailSendJobs EmailSendJob[]
 
   @@index([userId])
   @@index([userId, isActive])
@@ -198,6 +201,69 @@ model Lead {
   @@index([userId])
   @@index([campaignId])
   @@index([email])
+}
+
+model GmailAccount {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailAddress  String
+  accessToken   String
+  refreshToken  String
+  expiresAt     DateTime
+  scope         String
+  tokenType     String
+  historyId     String?
+  connectedAt   DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  emailSendJobs EmailSendJob[]
+
+  @@unique([userId])
+  @@unique([emailAddress])
+}
+
+model EmailSendJob {
+  id             String           @id @default(cuid())
+  userId         String
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaignId     String?
+  campaign       Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  gmailAccountId String
+  gmailAccount   GmailAccount     @relation(fields: [gmailAccountId], references: [id], onDelete: Cascade)
+
+  leadEmail      String
+  leadFirstName  String?
+  leadLastName   String?
+  leadCompany    String?
+  leadSummary    String?
+  sheetRowRef    String?
+
+  subject        String
+  bodyHtml       String
+  bodyText       String?
+
+  status         EmailSendStatus  @default(PENDING)
+  error          String?
+  scheduledAt    DateTime?        @default(now())
+  sentAt         DateTime?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId])
+  @@index([campaignId])
+  @@index([gmailAccountId])
+  @@index([status])
+}
+
+enum EmailSendStatus {
+  PENDING
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
 }
 
 model RateLimit {

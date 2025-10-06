@@ -2,15 +2,20 @@
 import { google } from 'googleapis'
 import { LEAD_SHEET_COLUMNS, SheetLeadRow } from '../utils'
 
+const MAX_REQUESTS_PER_MINUTE = 60
+const DEFAULT_BATCH_SIZE = 500
+const MAX_APPEND_RETRIES = 5
+
 export async function writeLeadsToSheet(
   oauth2Client: any,
   spreadsheetId: string,
   range: string,
   rows: SheetLeadRow[],
-  batchSize: number = 50
+  batchSize: number = DEFAULT_BATCH_SIZE
 ): Promise<number> {
   const sheets = google.sheets({ version: 'v4', auth: oauth2Client })
   let totalWritten = 0
+  const throttleDelayMs = Math.max(1000, Math.floor(60000 / MAX_REQUESTS_PER_MINUTE))
 
   // Check if sheet has headers, if not add them
   await ensureHeaders(sheets, spreadsheetId, range)
@@ -20,39 +25,98 @@ export async function writeLeadsToSheet(
     const batch = rows.slice(i, i + batchSize)
     const values = batch.map(leadToSheetRow)
 
-    try {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range,
-        valueInputOption: 'RAW',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: {
-          values,
-        },
-      })
+    await appendWithRetry(sheets, {
+      spreadsheetId,
+      range,
+      values,
+    })
 
-      totalWritten += batch.length
-      console.log(`Written ${batch.length} leads to sheet (total: ${totalWritten})`)
+    totalWritten += batch.length
+    console.log(`Written ${batch.length} leads to sheet (total: ${totalWritten})`)
 
-      // Small delay between batches to avoid rate limiting
-      if (i + batchSize < rows.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-      }
-
-    } catch (error:any) {
-      console.error(`Failed to write batch starting at index ${i}:`, error)
-      
-      // Check if it's an authentication scope error
-      if (error.message && error.message.includes('insufficient authentication scopes')) {
-        console.error('❌ Authentication scopes issue detected. Please reconnect your Google account.')
-        throw new Error('Insufficient Google Sheets permissions. Please reconnect your Google account with write permissions.')
-      }
-      
-      // Don't throw for other errors - continue with next batch
+    if (i + batchSize < rows.length) {
+      await delay(throttleDelayMs)
     }
   }
 
   return totalWritten
+}
+
+async function appendWithRetry(
+  sheets: ReturnType<typeof google.sheets>,
+  params: {
+    spreadsheetId: string
+    range: string
+    values: string[][]
+  }
+) {
+  let attempt = 0
+  let backoffMs = 1000
+
+  while (attempt <= MAX_APPEND_RETRIES) {
+    try {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: params.spreadsheetId,
+        range: params.range,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: params.values,
+        },
+      })
+      return
+    } catch (error: any) {
+      const statusCode = extractStatusCode(error)
+      const isAuthScopeError = typeof error?.message === 'string' && error.message.includes('insufficient authentication scopes')
+      const shouldRetry = statusCode === 429 || (statusCode !== null && statusCode >= 500 && statusCode < 600)
+
+      console.error(`Failed to write batch (attempt ${attempt + 1}):`, error)
+
+      if (isAuthScopeError) {
+        console.error('❌ Authentication scopes issue detected. Please reconnect your Google account.')
+        throw new Error('Insufficient Google Sheets permissions. Please reconnect your Google account with write permissions.')
+      }
+
+      if (!shouldRetry || attempt === MAX_APPEND_RETRIES) {
+        throw new Error(`Failed to append values to Google Sheet after ${attempt + 1} attempts.`)
+      }
+
+      await delay(backoffMs)
+      backoffMs = Math.min(backoffMs * 2, 30000)
+      attempt += 1
+    }
+  }
+}
+
+function extractStatusCode(error: any): number | null {
+  if (!error) return null
+
+  const codeFromResponse = error?.response?.status
+  if (typeof codeFromResponse === 'number') {
+    return codeFromResponse
+  }
+
+  const codeFromError = typeof error?.code === 'number' ? error.code : Number(error?.code)
+  if (!Number.isNaN(codeFromError) && Number.isFinite(codeFromError)) {
+    return Number(codeFromError)
+  }
+
+  const reason = error?.errors && Array.isArray(error.errors)
+    ? error.errors.find((err: any) => typeof err?.reason === 'string')?.reason
+    : null
+
+  if (reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded') {
+    return 429
+  }
+
+  return null
+}
+
+async function delay(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return
+  }
+  await new Promise(resolve => setTimeout(resolve, ms))
 }
 
 async function ensureHeaders(sheets: any, spreadsheetId: string, range: string) {

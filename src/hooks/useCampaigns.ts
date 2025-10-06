@@ -1,8 +1,12 @@
 // src/hooks/useCampaigns.ts
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { toast } from 'react-hot-toast'
+'use client'
+
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import axios from 'axios'
+import { toast } from 'sonner'
 
 import type { CampaignListResponse, CampaignSummary } from '@/lib/campaigns'
+import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
 
 export type Campaign = CampaignSummary
 
@@ -32,6 +36,17 @@ export interface CampaignStatus {
   totalLeads: number
 }
 
+const extractAxiosMessage = (error: unknown, fallback: string): string => {
+  if (axios.isAxiosError(error)) {
+    const responseMessage = (error.response?.data as { error?: string })?.error
+    return responseMessage || error.message || fallback
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return fallback
+}
+
 export function useCampaigns(
   initialData?: CampaignListResponse,
   autoRefreshMs: number = 0
@@ -43,6 +58,37 @@ export function useCampaigns(
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const hasInitialisedRef = useRef(!!initialData)
+  const client = useMemo(() => getApiClient(), [])
+  const cancelTokensRef = useRef<{ list: CancelTokenSource | null; action: CancelTokenSource | null }>({
+    list: null,
+    action: null,
+  })
+
+  useEffect(() => {
+    const tokensRef = cancelTokensRef
+    return () => {
+      const tokens = tokensRef.current
+      Object.values(tokens as Record<string, CancelTokenSource | null>)
+        .filter(Boolean)
+        .forEach((source) => (source as CancelTokenSource).cancel('Component unmounted'))
+    }
+  }, [])
+
+  const replaceToken = useCallback((key: 'list' | 'action') => {
+    const existing = cancelTokensRef.current[key]
+    if (existing) {
+      existing.cancel('Superseded request')
+    }
+    const next = createCancelSource()
+    cancelTokensRef.current[key] = next
+    return next
+  }, [])
+
+  const clearToken = useCallback((key: 'list' | 'action', source: CancelTokenSource | null) => {
+    if (source && cancelTokensRef.current[key] === source) {
+      cancelTokensRef.current[key] = null
+    }
+  }, [])
 
   useEffect(() => {
     if (initialData) {
@@ -54,6 +100,7 @@ export function useCampaigns(
   }, [initialData])
 
   const fetchCampaigns = useCallback(async ({ skipLoading }: FetchOptions = {}) => {
+    let cancelSource: CancelTokenSource | null = null
     try {
       const shouldSkipLoading = skipLoading ?? hasInitialisedRef.current
       if (shouldSkipLoading) {
@@ -63,29 +110,31 @@ export function useCampaigns(
       }
       setError(null)
 
-      const response = await fetch('/api/campaigns', {
-        cache: 'no-store',
+      cancelSource = replaceToken('list')
+
+      const { data } = await client.get<CampaignListResponse>('/api/campaigns', {
+        cancelToken: cancelSource.token,
         headers: {
           Accept: 'application/json',
+          'cache-control': 'no-store',
         },
       })
-      if (!response.ok) {
-        throw new Error('Failed to fetch campaigns')
-      }
-
-      const data = await response.json()
       setCampaigns(data.campaigns)
       setPagination(data.pagination)
       hasInitialisedRef.current = true
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      if (axios.isCancel(err)) {
+        return
+      }
+      const errorMessage = extractAxiosMessage(err, 'Failed to fetch campaigns')
       setError(errorMessage)
       toast.error(errorMessage)
     } finally {
       setLoading(false)
       setRefreshing(false)
+      clearToken('list', cancelSource)
     }
-  }, [])
+  }, [client, clearToken, replaceToken])
 
   useEffect(() => {
     if (!hasInitialisedRef.current) {
@@ -111,6 +160,7 @@ export function useCampaigns(
     pageSize?: number
     searchMode?: 'balanced' | 'conserve'
   }) => {
+    let cancelSource: CancelTokenSource | null = null
     try {
       setActionLoading(true)
       
@@ -126,110 +176,105 @@ export function useCampaigns(
         searchMode: campaignData.searchMode || 'balanced'
       }
       
-      const response = await fetch('/api/campaigns', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formattedData),
+      cancelSource = replaceToken('action')
+      const { data } = await client.post('/api/campaigns', formattedData, {
+        cancelToken: cancelSource.token,
       })
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to create campaign')
-      }
-
-      const data = await response.json()
-      
       toast.success('Campaign created successfully! Lead fetching has started.')
 
       await fetchCampaigns({ skipLoading: true })
-      
+
       return data.campaign
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to create campaign'
+      if (axios.isCancel(err)) {
+        return undefined
+      }
+      const errorMessage = extractAxiosMessage(err, 'Failed to create campaign')
       setError(errorMessage)
       toast.error(errorMessage)
       throw err
     } finally {
       setActionLoading(false)
+      clearToken('action', cancelSource)
     }
   }
 
   const updateCampaign = async (campaignId: string, updates: Partial<Campaign>) => {
+    let cancelSource: CancelTokenSource | null = null
     try {
       setActionLoading(true)
 
-      const response = await fetch(`/api/campaigns/${campaignId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(updates),
+      cancelSource = replaceToken('action')
+      await client.patch(`/api/campaigns/${campaignId}`, updates, {
+        cancelToken: cancelSource.token,
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to update campaign')
-      }
 
       toast.success('Campaign updated successfully')
       await fetchCampaigns({ skipLoading: true })
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to update campaign'
+      if (axios.isCancel(err)) {
+        return
+      }
+      const errorMessage = extractAxiosMessage(err, 'Failed to update campaign')
       setError(errorMessage)
       toast.error(errorMessage)
       throw err
     } finally {
       setActionLoading(false)
+      clearToken('action', cancelSource)
     }
   }
 
   const deleteCampaign = async (campaignId: string) => {
+    let cancelSource: CancelTokenSource | null = null
     try {
       setActionLoading(true)
 
-      const response = await fetch(`/api/campaigns/${campaignId}`, {
-        method: 'DELETE',
+      cancelSource = replaceToken('action')
+      await client.delete(`/api/campaigns/${campaignId}`, {
+        cancelToken: cancelSource.token,
       })
-
-      if (!response.ok) {
-        throw new Error('Failed to delete campaign')
-      }
 
       toast.success('Campaign deleted successfully')
       await fetchCampaigns({ skipLoading: true })
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to delete campaign'
+      if (axios.isCancel(err)) {
+        return
+      }
+      const errorMessage = extractAxiosMessage(err, 'Failed to delete campaign')
       setError(errorMessage)
       toast.error(errorMessage)
       throw err
     } finally {
       setActionLoading(false)
+      clearToken('action', cancelSource)
     }
   }
 
   const retryCampaign = async (campaignId: string) => {
+    let cancelSource: CancelTokenSource | null = null
     try {
       setActionLoading(true)
 
-      const response = await fetch(`/api/campaigns/${campaignId}/retry`, {
-        method: 'POST',
+      cancelSource = replaceToken('action')
+      await client.post(`/api/campaigns/${campaignId}/retry`, undefined, {
+        cancelToken: cancelSource.token,
       })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Failed to retry campaign')
-      }
 
       toast.success('Campaign retry started')
       await fetchCampaigns({ skipLoading: true })
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to retry campaign'
+      if (axios.isCancel(err)) {
+        return
+      }
+      const errorMessage = extractAxiosMessage(err, 'Failed to retry campaign')
       setError(errorMessage)
       toast.error(errorMessage)
       throw err
     } finally {
       setActionLoading(false)
+      clearToken('action', cancelSource)
     }
   }
 

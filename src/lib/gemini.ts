@@ -12,14 +12,26 @@ interface GeminiSummaryInput {
   linkedinUrl?: string | null
 }
 
-interface GeminiCandidate {
-  content?: {
-    parts?: Array<{ text?: string }>
-  }
+interface OutreachEmailCandidate {
+  subject: string
+  body: string
 }
 
-interface GeminiResponse {
-  candidates?: GeminiCandidate[]
+export interface OutreachEmailInput {
+  leadFirstName?: string | null
+  leadLastName?: string | null
+  leadCompany?: string | null
+  leadSummary?: string | null
+  leadRole?: string | null
+  senderName?: string | null
+  senderCompany?: string | null
+  senderValueProp?: string | null
+  callToAction?: string | null
+}
+
+export interface OutreachEmailDraft {
+  subject: string
+  body: string
 }
 
 const SYSTEM_INSTRUCTION = `You are a sophisticated AI data processing engine. Your main role is to take raw JSON data (which may be messy, incomplete, or contain extra fields) and perform critical structured data extraction and synthesis.
@@ -53,6 +65,10 @@ Output Schema
 
 let genAI: GoogleGenAI | null = null
 
+const DEFAULT_MODEL_ORDER = ['gemini-2.5-flash', 'gemini-1.5-flash'] as const
+const MAX_RETRY_ATTEMPTS = 3
+const BASE_RETRY_DELAY_MS = 750
+
 function getGeminiClient(): GoogleGenAI | null {
   if (genAI) {
     return genAI
@@ -67,6 +83,71 @@ function getGeminiClient(): GoogleGenAI | null {
   return genAI
 }
 
+function isRetryableGeminiError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const maybeError = error as { code?: number; status?: string; error?: { code?: number; status?: string; message?: string }; message?: string }
+  const code = maybeError.code ?? maybeError.error?.code
+  if (typeof code === 'number' && [408, 429, 500, 502, 503, 504].includes(code)) {
+    return true
+  }
+
+  const status = maybeError.status ?? maybeError.error?.status
+  if (typeof status === 'string' && ['UNAVAILABLE', 'RESOURCE_EXHAUSTED'].includes(status.toUpperCase())) {
+    return true
+  }
+
+  const message = maybeError.message ?? maybeError.error?.message
+  if (typeof message === 'string' && /(overloaded|unavailable|timeout|exhausted)/i.test(message)) {
+    return true
+  }
+
+  return false
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function generateContentWithFallback(
+  client: GoogleGenAI,
+  baseRequest: { contents: unknown; config?: unknown },
+  models: readonly string[] = DEFAULT_MODEL_ORDER,
+) {
+  let lastError: unknown = null
+
+  for (const model of models) {
+    for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt += 1) {
+      try {
+        return await client.models.generateContent({
+          ...(baseRequest as Record<string, unknown>),
+          model,
+          contents: ''
+        })
+      } catch (error) {
+        lastError = error
+        if (!isRetryableGeminiError(error)) {
+          throw error
+        }
+
+        const isLastAttempt = attempt === MAX_RETRY_ATTEMPTS - 1
+        if (isLastAttempt) {
+          break
+        }
+
+        const delayMs = BASE_RETRY_DELAY_MS * (attempt + 1)
+        await wait(delayMs)
+      }
+    }
+  }
+
+  throw lastError ?? new Error('Gemini request failed without an explicit error payload')
+}
+
 export async function generateGeminiLeadSummary(input: GeminiSummaryInput): Promise<string | null> {
   const client = getGeminiClient()
   if (!client) {
@@ -75,8 +156,7 @@ export async function generateGeminiLeadSummary(input: GeminiSummaryInput): Prom
 
   const prompt = buildPrompt(input)
   try {
-    const response = await client.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const response = await generateContentWithFallback(client, {
       contents: [
         {
           role: 'user',
@@ -129,17 +209,26 @@ function buildPrompt(input: GeminiSummaryInput): string {
   return JSON.stringify(payload, null, 2)
 }
 
-function extractSummaryText(response: any): string | null {
-  const candidate = response?.response?.candidates?.find(Boolean)
-  if (candidate?.content?.parts?.length) {
-    const textPart = candidate.content.parts.find((part: any) => typeof part.text === 'string')
+type GeminiContentPart = { text?: string }
+type GeminiCandidate = { content?: { parts?: GeminiContentPart[] } }
+type GeminiSummaryPayload = {
+  response?: { candidates?: GeminiCandidate[] }
+  output_text?: unknown
+}
+
+function extractSummaryText(response: unknown): string | null {
+  const typedResponse = response as GeminiSummaryPayload
+  const candidate = typedResponse.response?.candidates?.find(Boolean)
+  const parts = candidate?.content?.parts
+  if (parts?.length) {
+    const textPart = parts.find((part) => typeof part.text === 'string')
     if (textPart?.text) {
       return textPart.text
     }
   }
 
-  if (typeof response?.output_text === 'string') {
-    return response.output_text
+  if (typeof typedResponse.output_text === 'string') {
+    return typedResponse.output_text
   }
 
   return null
@@ -161,4 +250,78 @@ export async function generateSmartLeadSummary(input: GeminiSummaryInput): Promi
     email: input.email || '',
     linkedin_url: input.linkedinUrl || '',
   })
+}
+
+const EMAIL_INSTRUCTION = `You are a senior SDR crafting hyper-personalised cold outreach emails. Respond ONLY with valid JSON matching this schema: { "subject": "string", "body": "string" }.
+
+Rules:
+- Keep the email under 170 words; use crisp paragraphs.
+- Address the lead by name, reference their company and role, and connect their summary to the pitch.
+- Use a single clear CTA (e.g. quick intro call) in the closing line.
+- Keep tone confident, respectful, and professional American-style English.
+- Never invent facts; rely only on provided input.
+- Body must be HTML-safe without <html>/<body> tags.`
+
+export async function generateOutreachEmailDraft(
+  input: OutreachEmailInput,
+): Promise<OutreachEmailDraft | null> {
+  const client = getGeminiClient()
+  if (!client) {
+    return null
+  }
+
+  const payload = {
+    lead: {
+      first_name: input.leadFirstName || '',
+      last_name: input.leadLastName || '',
+      company: input.leadCompany || '',
+      role: input.leadRole || '',
+      summary: input.leadSummary || '',
+    },
+    sender: {
+      name: input.senderName || '',
+      company: input.senderCompany || '',
+      value_prop: input.senderValueProp || '',
+      call_to_action: input.callToAction || 'Would love 15 minutes later this week to share more if it resonates.',
+    },
+  }
+
+  try {
+    const response = await generateContentWithFallback(client, {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: JSON.stringify(payload, null, 2) }],
+        },
+      ],
+      config: {
+        systemInstruction: EMAIL_INSTRUCTION,
+      },
+    })
+
+    const text = extractSummaryText(response)
+    if (!text) {
+      return null
+    }
+
+    try {
+      const parsed = JSON.parse(text) as OutreachEmailCandidate
+      if (parsed.subject && parsed.body) {
+        return {
+          subject: parsed.subject.trim(),
+          body: parsed.body.trim(),
+        }
+      }
+    } catch (error) {
+      console.warn('Gemini outreach email response unparsable, returning raw text body', error)
+    }
+
+    return {
+      subject: `Quick intro?`,
+      body: text.trim(),
+    }
+  } catch (error) {
+    console.error('Gemini outreach email generation error:', error)
+    return null
+  }
 }

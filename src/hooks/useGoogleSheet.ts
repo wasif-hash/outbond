@@ -1,126 +1,191 @@
+'use client'
 
-import { useState } from 'react';
-import { GoogleSpreadsheet, SpreadsheetData, GoogleConnectionStatus } from '@/types/google-sheet';
+import { useEffect, useMemo, useRef, useState } from 'react'
+import axios from 'axios'
+import { toast } from 'sonner'
+import { GoogleSpreadsheet, SpreadsheetData, GoogleConnectionStatus } from '@/types/google-sheet'
+import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
+
+type RequestKey = 'status' | 'connect' | 'disconnect' | 'spreadsheets' | 'sheetData'
 
 export const useGoogleSheets = () => {
-  const [status, setStatus] = useState<GoogleConnectionStatus | null>(null);
-  const [spreadsheets, setSpreadsheets] = useState<GoogleSpreadsheet[]>([]);
-  const [selectedSheet, setSelectedSheet] = useState<SpreadsheetData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<GoogleConnectionStatus | null>(null)
+  const [spreadsheets, setSpreadsheets] = useState<GoogleSpreadsheet[]>([])
+  const [selectedSheet, setSelectedSheet] = useState<SpreadsheetData | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const client = useMemo(() => getApiClient(), [])
+  const cancelMapRef = useRef<Record<RequestKey, CancelTokenSource | null>>({
+    status: null,
+    connect: null,
+    disconnect: null,
+    spreadsheets: null,
+    sheetData: null,
+  })
+
+  useEffect(() => () => {
+    ;(Object.values(cancelMapRef.current) as CancelTokenSource[])
+      .filter(Boolean)
+      .forEach((source) => source.cancel('Component unmounted'))
+  }, [])
+
+  const replaceCancelToken = (key: RequestKey) => {
+    const existing = cancelMapRef.current[key]
+    if (existing) {
+      existing.cancel('Replaced by a new request')
+    }
+    const next = createCancelSource()
+    cancelMapRef.current[key] = next
+    return next
+  }
+
+  const clearCancelToken = (key: RequestKey, source: CancelTokenSource | null) => {
+    if (source && cancelMapRef.current[key] === source) {
+      cancelMapRef.current[key] = null
+    }
+  }
 
   const checkConnectionStatus = async () => {
+    let cancelSource: CancelTokenSource | null = null
     try {
-      const response = await fetch('/api/google-sheets/status');
-      if (response.ok) {
-        const data = await response.json();
-        setStatus(data);
+      cancelSource = replaceCancelToken('status')
+      const response = await client.get<GoogleConnectionStatus>('/api/google-sheets/status', {
+        cancelToken: cancelSource.token,
+      })
+      setStatus(response.data)
+    } catch (err) {
+      if (axios.isCancel(err)) {
+        return
       }
-    } catch (error) {
-      console.error('Failed to check connection status:', error);
+      console.error('Failed to check connection status:', err)
+      toast.error('Unable to verify Google Sheets connection')
+    } finally {
+      clearCancelToken('status', cancelSource)
     }
-  };
+  }
 
   const connectGoogleAccount = async () => {
+    let cancelSource: CancelTokenSource | null = null
     try {
-      setLoading(true);
-      setError(null);
+      setLoading(true)
+      setError(null)
+      toast.message('Redirecting to Google for authorization…')
 
-      const response = await fetch('/api/auth/google');
-      if (!response.ok) {
-        throw new Error('Failed to get Google auth URL');
+      cancelSource = replaceCancelToken('connect')
+      const response = await client.get<{ authUrl: string }>('/api/auth/google', {
+        cancelToken: cancelSource.token,
+      })
+      window.location.href = response.data.authUrl
+    } catch (err) {
+      if (axios.isCancel(err)) {
+        return
       }
-
-      const { authUrl } = await response.json();
-      window.location.href = authUrl;
-    } catch (error) {
-      setError('Failed to connect Google account');
-      console.error('Connect error:', error);
+      setError('Failed to connect Google account')
+      console.error('Connect error:', err)
+      toast.error('Failed to start Google authorization')
     } finally {
-      setLoading(false);
+      clearCancelToken('connect', cancelSource)
+      setLoading(false)
     }
-  };
+  }
 
   const disconnectGoogleAccount = async () => {
+    let cancelSource: CancelTokenSource | null = null
     try {
-      setLoading(true);
-      setError(null);
+      setLoading(true)
+      setError(null)
 
-      const response = await fetch('/api/google-sheets/disconnect', {
-        method: 'DELETE',
-      });
+      cancelSource = replaceCancelToken('disconnect')
+      await client.delete('/api/google-sheets/disconnect', {
+        cancelToken: cancelSource.token,
+      })
 
-      if (!response.ok) {
-        throw new Error('Failed to disconnect');
+      toast.success('Google Sheets disconnected')
+      setStatus(null)
+      setSpreadsheets([])
+      setSelectedSheet(null)
+      checkConnectionStatus()
+    } catch (err) {
+      if (axios.isCancel(err)) {
+        return
       }
-
-      setStatus(null);
-      setSpreadsheets([]);
-      setSelectedSheet(null);
-      checkConnectionStatus();
-    } catch (error) {
-      setError('Failed to disconnect Google account');
-      console.error('Disconnect error:', error);
+      setError('Failed to disconnect Google account')
+      console.error('Disconnect error:', err)
+      toast.error('Failed to disconnect Google account')
     } finally {
-      setLoading(false);
+      clearCancelToken('disconnect', cancelSource)
+      setLoading(false)
     }
-  };
+  }
 
   const fetchSpreadsheets = async () => {
+    let cancelSource: CancelTokenSource | null = null
     try {
-      setLoading(true);
-      setError(null);
+      setLoading(true)
+      setError(null)
 
-      // First fetch from Google API and store in database
-      const response = await fetch('/api/google-sheets');
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to fetch spreadsheets');
+      cancelSource = replaceCancelToken('spreadsheets')
+      await client.get('/api/google-sheets', {
+        cancelToken: cancelSource.token,
+      })
+
+      const stored = await client.get<{ spreadsheets: GoogleSpreadsheet[] }>('/api/google-sheets/stored', {
+        cancelToken: cancelSource.token,
+      })
+
+      setSpreadsheets(stored.data.spreadsheets)
+      toast.success('Google Sheets library refreshed')
+      if (stored.data.spreadsheets.length === 0) {
+        toast.message('No spreadsheets saved yet', {
+          description: 'Connect a sheet to start syncing leads.',
+        })
       }
-
-      // Then fetch stored sheets for form use
-      const storedResponse = await fetch('/api/google-sheets/stored');
-      if (!storedResponse.ok) {
-        const errorData = await storedResponse.json();
-        throw new Error(errorData.error || 'Failed to fetch stored spreadsheets');
+    } catch (err) {
+      if (axios.isCancel(err)) {
+        return
       }
-
-      const { spreadsheets } = await storedResponse.json();
-      console.log('Fetched stored spreadsheets:', spreadsheets);
-      setSpreadsheets(spreadsheets);
-    } catch (error) {
-      setError('Failed to fetch spreadsheets');
-      console.error('Fetch spreadsheets error:', error);
+      const message = err instanceof Error ? err.message : 'Failed to fetch spreadsheets'
+      setError(message)
+      console.error('Fetch spreadsheets error:', err)
+      toast.error(message)
     } finally {
-      setLoading(false);
+      clearCancelToken('spreadsheets', cancelSource)
+      setLoading(false)
     }
-  };
+  }
 
   const fetchSheetData = async (spreadsheetId: string, range?: string) => {
+    let cancelSource: CancelTokenSource | null = null
     try {
-      setLoading(true);
-      setError(null);
+      setLoading(true)
+      setError(null)
 
-      const url = new URL(`/api/google-sheets/${spreadsheetId}`, window.location.origin);
-      if (range) {
-        url.searchParams.set('range', range);
+      cancelSource = replaceCancelToken('sheetData')
+      const params = range ? { params: { range } } : undefined
+      const response = await client.get<SpreadsheetData>(`/api/google-sheets/${spreadsheetId}`, {
+        ...(params || {}),
+        cancelToken: cancelSource.token,
+      })
+
+      setSelectedSheet(response.data)
+      const rowCount = Array.isArray(response.data.data) ? response.data.data.length : 0
+      toast.success(`Loaded ${rowCount} rows from Google Sheets`)
+      return response.data
+    } catch (err) {
+      if (axios.isCancel(err)) {
+        return undefined
       }
-
-      const response = await fetch(url.toString());
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to fetch sheet data');
-      }
-
-      const data = await response.json();
-      setSelectedSheet(data);
-    } catch (error) {
-      setError('Failed to fetch sheet data');
-      console.error('Fetch sheet data error:', error);
+      const message = err instanceof Error ? err.message : 'Failed to fetch sheet data'
+      setError(message)
+      console.error('Fetch sheet data error:', err)
+      toast.error(message)
+      return undefined
     } finally {
-      setLoading(false);
+      clearCancelToken('sheetData', cancelSource)
+      setLoading(false)
     }
-  };
+  }
 
   return {
     status,
@@ -134,5 +199,5 @@ export const useGoogleSheets = () => {
     disconnectGoogleAccount,
     fetchSpreadsheets,
     fetchSheetData,
-  };
-};
+  }
+}

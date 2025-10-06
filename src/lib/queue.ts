@@ -15,16 +15,31 @@ export interface LeadFetchJobData {
   isRetry?: boolean
 }
 
+export interface EmailSendQueueData {
+  jobId: string
+  userId: string
+  gmailAccountId: string
+}
+
 // Job queue for lead fetching
 export const leadFetchQueue = new Queue('lead-fetch', {
   connection: redis,
   defaultJobOptions: {
     removeOnComplete: 50, // Keep last 50 completed jobs
     removeOnFail: 100, // Keep last 100 failed jobs
-    attempts: 5,
+    attempts: 1,
+  },
+})
+
+export const emailSendQueue = new Queue('email-send', {
+  connection: redis,
+  defaultJobOptions: {
+    removeOnComplete: 200,
+    removeOnFail: 200,
+    attempts: 3,
     backoff: {
       type: 'exponential',
-      delay: 3000, // Start with 3 second delay
+      delay: 5000,
     },
   },
 })
@@ -40,6 +55,31 @@ export async function enqueueJob(
     delay: options.delay || 1000,
     ...options,
   })
+}
+
+export async function enqueueEmailSendJob(
+  data: EmailSendQueueData,
+  options: any = {}
+): Promise<Job> {
+  return emailSendQueue.add('email-send', data, {
+    delay: options.delay || 0,
+    ...options,
+  })
+}
+
+export async function removePendingCampaignJobs(campaignId: string): Promise<number> {
+  const jobStates = ['wait', 'delayed', 'paused', 'prioritized', 'waiting-children']
+  const jobs = await leadFetchQueue.getJobs(jobStates as any)
+  let removed = 0
+
+  for (const job of jobs) {
+    if (job?.data?.campaignId === campaignId) {
+      await job.remove()
+      removed += 1
+    }
+  }
+
+  return removed
 }
 
 // Get job status

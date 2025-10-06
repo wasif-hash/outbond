@@ -1,4 +1,5 @@
 // src/lib/apollo.ts
+import axios from 'axios'
 import { RateLimiter } from '@/lib/rate-limit'
 
 const APOLLO_API_BASE = 'https://api.apollo.io/api/v1'
@@ -70,6 +71,33 @@ interface ApolloBulkMatchResponse {
 
 interface ApolloRevealEmailResponse {
   email?: string | null
+}
+
+type ApolloHttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT' | 'HEAD'
+
+type ApolloOrganization = {
+  name?: string
+  website_url?: string
+  industry?: string
+}
+
+type ApolloPhoneEntry = { number?: string | null } | string | null
+
+interface RawApolloLead {
+  id?: string
+  first_name?: string | null
+  last_name?: string | null
+  title?: string | null
+  organization?: ApolloOrganization | null
+  email?: string | null
+  linkedin_url?: string | null
+  phone_numbers?: ApolloPhoneEntry[] | null
+  street_address?: string | null
+  city?: string | null
+  state?: string | null
+  country?: string | null
+  postal_code?: string | null
+  formatted_address?: string | null
 }
 
 export interface ApolloSearchResponse {
@@ -153,7 +181,7 @@ export class ApolloError extends Error {
   constructor(
     public status: number,
     message: string,
-    public details?: any
+    public details?: unknown
   ) {
     super(message)
     this.name = 'ApolloError'
@@ -185,9 +213,9 @@ export class ApolloClient {
   }
 
   private async request<T>(
-    method: string,
+    method: ApolloHttpMethod,
     path: string,
-    body?: any
+    body?: unknown
   ): Promise<T> {
     if (!this.apiKey) {
       throw new ApolloError(401, 'APOLLO_API_KEY is required but not provided')
@@ -199,8 +227,8 @@ export class ApolloClient {
     const url = `${this.baseUrl}${path}`
 
     console.log(`🌐 ${method} ${url}`)
-    if (body) {
-      console.log(`📦 Request body:`, JSON.stringify(body, null, 2))
+    if (typeof body !== 'undefined') {
+      console.log('📦 Request body:', body)
     }
 
     const headers: Record<string, string> = {
@@ -208,46 +236,58 @@ export class ApolloClient {
       'Cache-Control': 'no-cache',
     }
 
-    const options: RequestInit = {
-      method,
-      headers,
-    }
-
     if (body && method !== 'GET' && method !== 'HEAD') {
       headers['Content-Type'] = 'application/json'
-      options.body = JSON.stringify(body)
     }
 
     try {
-      const response = await fetch(url, options)
+      const response = await axios.request<T>({
+        method,
+        url,
+        headers,
+        data: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
+        validateStatus: () => true,
+      })
 
       console.log(`📊 Response: ${response.status} ${response.statusText}`)
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error(`❌ API Error Response:`, errorText)
-        
-        let errorDetails: any
-        try {
-          errorDetails = JSON.parse(errorText)
-        } catch {
-          errorDetails = { message: errorText }
-        }
-        
+      if (response.status < 200 || response.status >= 300) {
+        const errorPayload = response.data as unknown
+        const messageFromPayload =
+          typeof errorPayload === 'object' && errorPayload !== null
+            ? (errorPayload as { error?: string; message?: string }).error ||
+              (errorPayload as { message?: string }).message
+            : typeof errorPayload === 'string'
+              ? errorPayload
+              : null
+
+        console.error('❌ API Error Response:', errorPayload)
+
         throw new ApolloError(
           response.status,
-          errorDetails?.error || errorDetails?.message || `Apollo API error: ${response.statusText}`,
-          errorDetails
+          messageFromPayload || `Apollo API error: ${response.statusText}`,
+          errorPayload,
         )
       }
 
-      const data = await response.json()
-      return data as T
-    } catch (error:any) {
+      return response.data
+    } catch (error: unknown) {
       if (error instanceof ApolloError) {
         throw error
       }
-      throw new ApolloError(500, `Request failed: ${error.message}`)
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status ?? 500
+        const details = error.response?.data as unknown
+        const message =
+          (details && typeof details === 'object'
+            ? (details as { error?: string; message?: string }).error ||
+              (details as { message?: string }).message
+            : null) || error.message || 'Apollo request failed'
+
+        throw new ApolloError(status, message, details)
+      }
+      const fallbackMessage = error instanceof Error ? error.message : 'Unknown Apollo request failure'
+      throw new ApolloError(500, fallbackMessage)
     }
   }
 
@@ -300,7 +340,7 @@ export class ApolloClient {
     params.set('reveal_phone_number', String(options.revealPhoneNumber ?? false))
 
     const details = people.map(person => {
-      const detail: Record<string, any> = {
+      const detail: Record<string, unknown> = {
         client_identifier: person.identifier,
       }
 
@@ -393,7 +433,7 @@ export class ApolloClient {
   /**
    * Generate a summary for a lead using their data
    */
-  private generateLeadSummary(lead: any): string {
+  private generateLeadSummary(lead: RawApolloLead): string {
     const lines: string[] = []
     const name = [lead.first_name, lead.last_name]
       .filter(Boolean)
@@ -434,11 +474,28 @@ export class ApolloClient {
   /**
    * Process and enrich leads with AI-generated summaries
    */
-  processLeads(leads: any[]): ApolloLead[] {
-    return leads.map((lead: any) => {
-      const primaryPhone = Array.isArray(lead.phone_numbers) && lead.phone_numbers.length > 0
-        ? (lead.phone_numbers.find((p: any) => p?.number)?.number || lead.phone_numbers[0]?.number || '')
-        : ''
+  processLeads(leads: RawApolloLead[]): ApolloLead[] {
+    return leads.map((lead) => {
+      const phoneNumbers = lead.phone_numbers ?? []
+      let primaryPhone = ''
+
+      for (const entry of phoneNumbers) {
+        if (!entry) continue
+        if (typeof entry === 'string') {
+          if (entry.trim()) {
+            primaryPhone = entry
+            break
+          }
+        } else if (typeof entry === 'object' && 'number' in entry && entry.number) {
+          primaryPhone = entry.number ?? ''
+          break
+        }
+      }
+
+      if (!primaryPhone && phoneNumbers.length > 0) {
+        const firstEntry = phoneNumbers[0]
+        primaryPhone = typeof firstEntry === 'string' ? firstEntry ?? '' : firstEntry?.number ?? ''
+      }
 
       return {
         id: lead.id,

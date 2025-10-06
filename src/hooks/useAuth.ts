@@ -1,6 +1,8 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import axios from 'axios'
+import { getApiClient, createCancelSource } from '@/lib/http-client'
 
 interface User {
   id: string
@@ -25,44 +27,84 @@ export function useAuth() {
     isAdmin: false
   })
 
+  const client = useMemo(() => getApiClient(), [])
+
   useEffect(() => {
-    // Get user info from localStorage (set during login)
-    const userInfo = localStorage.getItem('auth-token')
+    let cancelled = false
+    const cancelSource = createCancelSource()
+
+    const userInfo = typeof window !== 'undefined' ? localStorage.getItem('auth-token') : null
     if (userInfo) {
       try {
-        const user = JSON.parse(userInfo)
-        setAuthState({
-          user,
-          loading: false,
-          isAdmin: user.role === 'admin'
-        })
+        const parsedUser: User = JSON.parse(userInfo)
+        if (!cancelled) {
+          setAuthState({
+            user: parsedUser,
+            loading: true,
+            isAdmin: parsedUser.role === 'admin'
+          })
+        }
       } catch (error) {
         console.error('Failed to parse user info:', error)
-        setAuthState({
-          user: null,
-          loading: false,
-          isAdmin: false
-        })
+        localStorage.removeItem('auth-token')
       }
-    } else {
-      setAuthState({
-        user: null,
-        loading: false,
-        isAdmin: false
-      })
     }
-  }, [])
+
+    const syncSession = async () => {
+      try {
+        const response = await client.get<{ user: User }>('/api/auth/session', {
+          cancelToken: cancelSource.token,
+          headers: {
+            'cache-control': 'no-store'
+          }
+        })
+
+        if (!cancelled) {
+          const data = response.data
+          localStorage.setItem('auth-token', JSON.stringify(data.user))
+          setAuthState({
+            user: data.user,
+            loading: false,
+            isAdmin: data.user.role === 'admin'
+          })
+        }
+      } catch (error) {
+        if (axios.isCancel(error)) {
+          return
+        }
+        const isUnauthorized = axios.isAxiosError(error) && error.response?.status === 401
+        if (!isUnauthorized) {
+          console.error('Failed to validate session:', error)
+        }
+        if (!cancelled) {
+          localStorage.removeItem('auth-token')
+          setAuthState({
+            user: null,
+            loading: false,
+            isAdmin: false
+          })
+        }
+      }
+    }
+
+    syncSession()
+
+    return () => {
+      cancelled = true
+      cancelSource.cancel('Component unmounted')
+    }
+  }, [client])
 
   const logout = async () => {
     try {
-      await fetch('/api/logout', { method: 'POST' })
+      await client.post('/api/auth/logout')
       localStorage.removeItem('auth-token')
       setAuthState({
         user: null,
         loading: false,
         isAdmin: false
       })
-      window.location.href = '/'
+      window.location.href = '/login'
     } catch (error) {
       console.error('Logout failed:', error)
     }

@@ -159,6 +159,12 @@ export const createCampaignRateLimit = (campaignId: string) => new TokenBucketRa
   refillRate: 1, // 1 request per second per campaign
 })
 
+export const createEmailSendRateLimit = (userId: string) => new TokenBucketRateLimit({
+  key: `email-send:${userId}`,
+  maxTokens: 5,
+  refillRate: 1,
+})
+
 // Distributed locking for preventing concurrent job execution
 export class RedisLock {
   private key: string

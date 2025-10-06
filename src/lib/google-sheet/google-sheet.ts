@@ -23,17 +23,20 @@ export async function refreshTokenIfNeeded(
 ): Promise<string> {
   try {
     const { credentials } = await oauth2Client.refreshAccessToken();
-    
+    const resolvedAccessToken = credentials.access_token || tokenRecord.accessToken;
+    const resolvedRefreshToken = credentials.refresh_token || tokenRecord.refreshToken;
+    const expiryDateMs = credentials.expiry_date || Date.now() + 55 * 60 * 1000; // default to ~55 minutes
+
     await prisma.googleOAuthToken.update({
       where: { userId },
       data: {
-        accessToken: credentials.access_token!,
-        refreshToken: credentials.refresh_token || tokenRecord.refreshToken,
-        expiresAt: new Date(credentials.expiry_date!),
+        accessToken: resolvedAccessToken,
+        refreshToken: resolvedRefreshToken,
+        expiresAt: new Date(expiryDateMs),
       }
     });
 
-    return credentials.access_token!;
+    return resolvedAccessToken;
   } catch (error) {
     console.error('Token refresh failed:', error);
     throw new Error('Failed to refresh Google token');

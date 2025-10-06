@@ -8,13 +8,15 @@ interface SheetDataDisplayProps {
   spreadsheets: GoogleSpreadsheet[];
   loading: boolean;
   onSelectSheet: (spreadsheetId: string, sheetTitle: string) => void;
+  activeSpreadsheetId?: string;
 }
 
 export const SheetDataDisplay = ({
   selectedSheet,
   spreadsheets,
   loading,
-  onSelectSheet
+  onSelectSheet,
+  activeSpreadsheetId
 }: SheetDataDisplayProps) => {
   return (
     <div className="mb-6">
@@ -28,6 +30,7 @@ export const SheetDataDisplay = ({
         spreadsheets={spreadsheets}
         selectedSheetTitle={selectedSheet.spreadsheet.properties.title}
         onSelectSheet={onSelectSheet}
+        activeSpreadsheetId={activeSpreadsheetId}
       />
 
       <DataTable data={selectedSheet.data} />

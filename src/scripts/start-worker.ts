@@ -45,6 +45,7 @@ console.log(`   - REDIS_URL: ${process.env.REDIS_URL ? 'set' : 'not set'}`)
 
 // Now import and start the worker
 import { startWorker } from '@/lib/worker'
+import { startEmailWorker } from '@/lib/email-worker'
 
 console.log('\n🚀 Starting lead fetch worker...')
 
@@ -110,9 +111,11 @@ async function main() {
     console.log('✅ All connections verified')
     
     // Start the worker
-    const worker = startWorker()
+    const leadWorker = startWorker()
+    const emailWorker = startEmailWorker()
     console.log('✅ Lead fetch worker started successfully')
-    console.log('📊 Worker is now listening for jobs...')
+    console.log('✅ Email send worker started successfully')
+    console.log('📊 Workers are now listening for jobs...')
     console.log('📋 Press Ctrl+C to stop the worker')
 
     // Handle graceful shutdown
@@ -120,8 +123,9 @@ async function main() {
       console.log(`\n📋 Received ${signal}, shutting down worker gracefully...`)
       
       try {
-        await worker.close()
-        console.log('✅ Worker shut down successfully')
+        await leadWorker.close()
+        await emailWorker.close()
+        console.log('✅ Workers shut down successfully')
         
         // Close Redis connection
         const { redis } = await import('@/lib/queue')

@@ -19,7 +19,7 @@ interface CampaignActionsProps {
       spreadsheetId: string
     }
   }
-  latestJobStatus?: string
+  latestJobStatus?: string | null | undefined
   onToggleActive: (campaignId: string, isActive: boolean) => void
   onRetry: (campaignId: string) => void
   onDelete: (campaignId: string) => void

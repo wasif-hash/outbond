@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { ErrorAlert } from './google-sheet/ErrorAlert';
 import { ConnectionStatus } from './google-sheet/ConnectionStatus';
 import { ConnectionActions } from './google-sheet/ConnectionActions';
 import { SpreadsheetsList } from './google-sheet/SpreadsheetsList';
 import { useGoogleSheets } from '@/hooks/useGoogleSheet';
 import { SheetDataDisplay } from './google-sheet/SheetDataDisplay';
+import { toast } from 'sonner';
 
 
 export default function GoogleSheetsButton() {
@@ -24,9 +25,39 @@ export default function GoogleSheetsButton() {
     fetchSheetData,
   } = useGoogleSheets();
 
+  const lastConnectionRef = useRef<boolean | null>(null);
+  const lastErrorRef = useRef<string | null>(null);
+  const wasExpiredRef = useRef<boolean>(false);
+
   useEffect(() => {
     checkConnectionStatus();
   }, []);
+
+  useEffect(() => {
+    const isConnected = Boolean(status?.isConnected && !status?.isExpired);
+
+    if (isConnected && lastConnectionRef.current !== true) {
+      toast.success('Google Sheets connected successfully');
+    }
+
+    if (!isConnected && lastConnectionRef.current === true) {
+      toast.warning('Google Sheets disconnected');
+    }
+
+    if (status?.isExpired && !wasExpiredRef.current) {
+      toast.warning('Google Sheets connection expired. Please reconnect.');
+    }
+
+    wasExpiredRef.current = Boolean(status?.isExpired);
+    lastConnectionRef.current = isConnected;
+  }, [status]);
+
+  useEffect(() => {
+    if (!error) return;
+    if (error === lastErrorRef.current) return;
+    toast.error(error);
+    lastErrorRef.current = error;
+  }, [error]);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">

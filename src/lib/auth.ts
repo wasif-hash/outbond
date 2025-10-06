@@ -5,7 +5,13 @@ import { jwtVerify } from 'jose'
 
 import { prisma } from './prisma'
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key-change-in-production')
+const rawJwtSecret = process.env.JWT_SECRET
+
+if (!rawJwtSecret) {
+  throw new Error('JWT_SECRET environment variable is required but was not provided.')
+}
+
+const JWT_SECRET = new TextEncoder().encode(rawJwtSecret)
 export type JWTPayload = { sub: string }
 
 export interface AuthUser {
@@ -21,10 +27,16 @@ export interface AuthResult {
 }
 
 
-export async function verifyAuth(request: NextRequest): Promise<AuthResult> {
+export async function verifyAuth(request?: NextRequest): Promise<AuthResult> {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get('auth-token')?.value
+    let token: string | undefined
+
+    if (request) {
+      token = request.cookies.get('auth-token')?.value || undefined
+    } else {
+      const cookieStore = await cookies()
+      token = cookieStore.get('auth-token')?.value
+    }
 
     if (!token) {
       return {
@@ -133,5 +145,3 @@ export const config = {
     '/((?!api|_next/static|_next/image|favicon.ico).*)',
   ],
 }
-
-

@@ -6,6 +6,7 @@ interface SheetTabsProps {
   spreadsheets: GoogleSpreadsheet[];
   selectedSheetTitle: string;
   onSelectSheet: (spreadsheetId: string, sheetTitle: string) => void;
+  activeSpreadsheetId?: string;
 }
 
 export const SheetTabs = ({
@@ -13,7 +14,8 @@ export const SheetTabs = ({
   loading,
   spreadsheets,
   selectedSheetTitle,
-  onSelectSheet
+  onSelectSheet,
+  activeSpreadsheetId
 }: SheetTabsProps) => {
   if (sheets.length <= 1) return null;
 
@@ -28,8 +30,9 @@ export const SheetTabs = ({
               const currentSpreadsheetId = spreadsheets.find(s => 
                 s.name === selectedSheetTitle
               )?.id;
-              if (currentSpreadsheetId) {
-                onSelectSheet(currentSpreadsheetId, sheet.title);
+              const spreadsheetId = activeSpreadsheetId || currentSpreadsheetId;
+              if (spreadsheetId) {
+                onSelectSheet(spreadsheetId, sheet.title);
               }
             }}
             disabled={loading}
