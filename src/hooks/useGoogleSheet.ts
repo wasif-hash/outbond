@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { SetStateAction } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
 import { GoogleSpreadsheet, SpreadsheetData, GoogleConnectionStatus } from '@/types/google-sheet'
@@ -8,12 +9,58 @@ import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-
 
 type RequestKey = 'status' | 'connect' | 'disconnect' | 'spreadsheets' | 'sheetData'
 
+let cachedStatus: GoogleConnectionStatus | null = null
+let cachedSpreadsheets: GoogleSpreadsheet[] = []
+let cachedSelectedSheet: SpreadsheetData | null = null
+let cachedHasFetchedSpreadsheets = false
+
+const resolveStateAction = <T,>(action: SetStateAction<T>, prev: T): T =>
+  typeof action === 'function' ? (action as (previous: T) => T)(prev) : action
+
 export const useGoogleSheets = () => {
-  const [status, setStatus] = useState<GoogleConnectionStatus | null>(null)
-  const [spreadsheets, setSpreadsheets] = useState<GoogleSpreadsheet[]>([])
-  const [selectedSheet, setSelectedSheet] = useState<SpreadsheetData | null>(null)
+  const [statusState, setStatusState] = useState<GoogleConnectionStatus | null>(() => cachedStatus)
+  const [spreadsheetsState, setSpreadsheetsState] = useState<GoogleSpreadsheet[]>(() => cachedSpreadsheets)
+  const [selectedSheetState, setSelectedSheetState] = useState<SpreadsheetData | null>(() => cachedSelectedSheet)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hasFetchedSpreadsheetsState, setHasFetchedSpreadsheetsState] = useState<boolean>(() => cachedHasFetchedSpreadsheets)
+
+  const setStatus = (value: SetStateAction<GoogleConnectionStatus | null>) => {
+    setStatusState((previous) => {
+      const next = resolveStateAction(value, previous)
+      cachedStatus = next
+      return next
+    })
+  }
+
+  const setSpreadsheets = (value: SetStateAction<GoogleSpreadsheet[]>) => {
+    setSpreadsheetsState((previous) => {
+      const next = resolveStateAction(value, previous)
+      cachedSpreadsheets = next
+      return next
+    })
+  }
+
+  const setSelectedSheet = (value: SetStateAction<SpreadsheetData | null>) => {
+    setSelectedSheetState((previous) => {
+      const next = resolveStateAction(value, previous)
+      cachedSelectedSheet = next
+      return next
+    })
+  }
+
+  const setHasFetchedSpreadsheets = (value: SetStateAction<boolean>) => {
+    setHasFetchedSpreadsheetsState((previous) => {
+      const next = resolveStateAction(value, previous)
+      cachedHasFetchedSpreadsheets = next
+      return next
+    })
+  }
+
+  const status = statusState
+  const spreadsheets = spreadsheetsState
+  const selectedSheet = selectedSheetState
+  const hasFetchedSpreadsheets = hasFetchedSpreadsheetsState
 
   const client = useMemo(() => getApiClient(), [])
   const cancelMapRef = useRef<Record<RequestKey, CancelTokenSource | null>>({
@@ -105,6 +152,9 @@ export const useGoogleSheets = () => {
       setStatus(null)
       setSpreadsheets([])
       setSelectedSheet(null)
+      setHasFetchedSpreadsheets(false)
+      cachedSpreadsheets = []
+      cachedSelectedSheet = null
       checkConnectionStatus()
     } catch (err) {
       if (axios.isCancel(err)) {
@@ -135,6 +185,7 @@ export const useGoogleSheets = () => {
       })
 
       setSpreadsheets(stored.data.spreadsheets)
+      setHasFetchedSpreadsheets(true)
       toast.success('Google Sheets library refreshed')
       if (stored.data.spreadsheets.length === 0) {
         toast.message('No spreadsheets saved yet', {
@@ -199,5 +250,6 @@ export const useGoogleSheets = () => {
     disconnectGoogleAccount,
     fetchSpreadsheets,
     fetchSheetData,
+    hasFetchedSpreadsheets,
   }
 }

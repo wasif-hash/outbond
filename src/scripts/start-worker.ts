@@ -45,7 +45,7 @@ console.log(`   - REDIS_URL: ${process.env.REDIS_URL ? 'set' : 'not set'}`)
 
 // Now import and start the worker
 import { startWorker } from '@/lib/worker'
-import { startEmailWorker } from '@/lib/email-worker'
+import { startEmailWorker } from '@/lib/email/email-worker'
 
 console.log('\n🚀 Starting lead fetch worker...')
 

@@ -4,6 +4,13 @@ import { GoogleOAuthToken } from '@prisma/client';
 import { prisma } from '../prisma'; // Use your existing prisma instance
 import { GoogleSpreadsheet } from '@/types/google-sheet';
 
+export class GoogleDriveApiDisabledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GoogleDriveApiDisabledError';
+  }
+}
+
 
 export async function createAuthorizedClient(accessToken: string, refreshToken: string) {
   const oauth2Client = newOAuth2Client();
@@ -45,18 +52,42 @@ export async function refreshTokenIfNeeded(
 
 export async function getUserSpreadsheets(oauth2Client: any): Promise<GoogleSpreadsheet[]> {
   const drive = google.drive({ version: 'v3', auth: oauth2Client });
-  
-  const response = await drive.files.list({
-    q: "mimeType='application/vnd.google-apps.spreadsheet'",
-    fields: 'files(id, name, webViewLink)',
-    pageSize: 100,
-  });
 
-  return response.data.files?.map(file => ({
-    id: file.id!,
-    name: file.name!,
-    webViewLink: file.webViewLink!,
-  })) || [];
+  try {
+    const response = await drive.files.list({
+      q: "mimeType='application/vnd.google-apps.spreadsheet'",
+      fields: 'files(id, name, webViewLink)',
+      pageSize: 100,
+    });
+
+    return (
+      response.data.files?.map((file) => ({
+        id: file.id!,
+        name: file.name!,
+        webViewLink: file.webViewLink!,
+      })) || []
+    );
+  } catch (error) {
+    const apiMessage =
+      (error as any)?.response?.data?.error?.message ||
+      (error as any)?.errors?.[0]?.message ||
+      (error as Error)?.message ||
+      'Unknown Google Drive error';
+
+    const isDisabled =
+      apiMessage.includes('Google Drive API has not been used in project') ||
+      apiMessage.includes('drive.googleapis.com') ||
+      (error as any)?.code === 403;
+
+    if (isDisabled) {
+      throw new GoogleDriveApiDisabledError(
+        'Google Drive API is disabled for the connected Google project. Enable the Drive API in Google Cloud Console and try again.'
+      );
+    }
+
+    console.error('Failed to list Google Sheets via Drive API:', error);
+    throw error;
+  }
 }
 
 export async function getSpreadsheetData(

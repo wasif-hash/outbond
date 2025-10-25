@@ -56,7 +56,18 @@ export async function getCampaignsForUser(
   const [campaigns, total] = await Promise.all([
     prisma.campaign.findMany({
       where: { userId },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        nicheOrJobTitle: true,
+        keywords: true,
+        location: true,
+        maxLeads: true,
+        pageSize: true,
+        searchMode: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
         googleSheet: {
           select: {
             title: true,
@@ -78,7 +89,9 @@ export async function getCampaignsForUser(
           },
         },
         _count: {
-          select: { leads: true },
+          select: {
+            leads: true,
+          },
         },
       },
       orderBy: { createdAt: 'desc' },

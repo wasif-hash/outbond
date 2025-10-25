@@ -1,51 +1,54 @@
-import { NextResponse, NextRequest } from 'next/server';
-import { newOAuth2Client } from '@/lib/google-sheet/google-auth';
-import { verifyAuth } from '@/lib/auth';
-import { GoogleAuthResponse } from '@/types/google-sheet';
+import { NextResponse, NextRequest } from 'next/server'
+import crypto from 'crypto'
+import jwt from 'jsonwebtoken'
 
+import { newOAuth2Client } from '@/lib/google-sheet/google-auth'
+import { verifyAuth } from '@/lib/auth'
+import { GoogleAuthResponse } from '@/types/google-sheet'
+
+const GOOGLE_SCOPES = [
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/userinfo.email',
+]
 
 export async function GET(request: NextRequest) {
   try {
-    console.log('Google auth route called');
-    
-    const authResult = await verifyAuth(request);
-    console.log('Auth result:', authResult);
-    
+    const authResult = await verifyAuth(request)
+
     if (!authResult.success || !authResult.user) {
-      console.error('Authentication failed:', authResult.error);
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    console.log('User authenticated:', authResult.user);
+    const jwtSecret = process.env.JWT_SECRET
+    if (!jwtSecret) {
+      console.error('JWT_SECRET environment variable is missing')
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 })
+    }
 
-    const oauth2Client = newOAuth2Client();
-    
-    const scopes = [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive',
-      'https://www.googleapis.com/auth/userinfo.email'
-    ];
+    const nonce = crypto.randomBytes(8).toString('hex')
+    const statePayload = { userId: authResult.user.userId, n: nonce }
+    const state = jwt.sign(statePayload, jwtSecret, { expiresIn: '15m' })
 
-    // Include user ID in state parameter to preserve it through OAuth flow
-    const state = Buffer.from(JSON.stringify({
-      userId: authResult.user.userId,
-      email: authResult.user.email,
-      role: authResult.user.role
-    })).toString('base64');
-
+    const oauth2Client = newOAuth2Client()
     const authUrl = oauth2Client.generateAuthUrl({
       access_type: 'offline',
-      scope: scopes,
+      scope: GOOGLE_SCOPES,
       prompt: 'consent',
-      state: state // Pass user info in state
-    });
+      state,
+    })
 
-    console.log('Generated Google auth URL with state');
-    
-    const response: GoogleAuthResponse = { authUrl };
-    return NextResponse.json(response);
+    const response = NextResponse.json<GoogleAuthResponse>({ authUrl })
+    response.cookies.set('google_oauth_nonce', nonce, {
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 900, // 15 minutes
+    })
+
+    return response
   } catch (error) {
-    console.error('Google auth error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error('Google auth error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

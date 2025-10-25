@@ -77,26 +77,52 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(`${process.env.NEXTJS_URL}/dashboard/settings?error=gmail_missing_address`)
     }
 
-    await db.gmailAccount.upsert({
-      where: { userId: userId },
-      update: {
-        emailAddress,
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
-        expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 55 * 60 * 1000),
-        tokenType: tokens.token_type || 'Bearer',
-        scope: tokens.scope || '',
-      },
-      create: {
-        userId,
-        emailAddress,
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
-        expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 55 * 60 * 1000),
-        tokenType: tokens.token_type || 'Bearer',
-        scope: tokens.scope || '',
-      },
+    const now = new Date()
+    const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 55 * 60 * 1000)
+
+    const existingAccount = await db.gmailAccount.findUnique({
+      where: { userId },
     })
+    const existingByEmail = await db.gmailAccount.findUnique({
+      where: { emailAddress },
+    })
+
+    const baseData = {
+      emailAddress,
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      expiresAt,
+      tokenType: tokens.token_type || 'Bearer',
+      scope: tokens.scope || '',
+      connectedAt: now,
+    }
+
+    if (existingAccount) {
+      await db.gmailAccount.update({
+        where: { userId },
+        data: baseData,
+      })
+    } else if (existingByEmail) {
+      if (existingByEmail.userId !== userId) {
+        console.warn(
+          `Gmail account ${emailAddress} was previously linked to user ${existingByEmail.userId}, reassigning to ${userId}`,
+        )
+      }
+      await db.gmailAccount.update({
+        where: { emailAddress },
+        data: {
+          ...baseData,
+          userId,
+        },
+      })
+    } else {
+      await db.gmailAccount.create({
+        data: {
+          ...baseData,
+          userId,
+        },
+      })
+    }
 
     const response = NextResponse.redirect(`${process.env.NEXTJS_URL}/dashboard/settings?success=gmail_connected`)
     response.cookies.set('gmail_oauth_nonce', '', { maxAge: 0, path: '/', httpOnly: true, sameSite: 'lax' })

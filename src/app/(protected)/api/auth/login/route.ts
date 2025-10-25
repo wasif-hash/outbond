@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/actions/user-actions'
-import { cookies } from 'next/headers'
 import { SignJWT } from 'jose'
 
 // Secret key for JWT
@@ -28,16 +27,7 @@ export async function POST(request: NextRequest) {
       .setIssuedAt()
       .sign(JWT_SECRET)
 
-    // Set cookie
-    const cookieStore = await cookies()
-    cookieStore.set('auth-token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 60 * 60 * 24
-    })
-
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       message: 'Login successful',
       role: authResult.user.role,
@@ -47,6 +37,15 @@ export async function POST(request: NextRequest) {
         role: authResult.user.role
       }
     })
+
+    response.cookies.set('auth-token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 60 * 60 * 24
+    })
+
+    return response
   } catch (error) {
     console.error('Login API error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

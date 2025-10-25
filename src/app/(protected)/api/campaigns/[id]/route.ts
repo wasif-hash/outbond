@@ -1,4 +1,5 @@
 // src/app/api/campaigns/[id]/route.ts
+import { revalidateTag } from 'next/cache'
 import { NextRequest, NextResponse } from 'next/server'
 import { JobStatus } from '@prisma/client'
 
@@ -99,6 +100,8 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       await cancelCampaignJobs(params.id, 'Campaign paused by user')
     }
 
+    revalidateTag(`user-campaigns:${authResult.user.userId}`)
+
     return NextResponse.json({ campaign: updatedCampaign })
 
   } catch (error) {
@@ -136,6 +139,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     await prisma.campaign.delete({
       where: { id: params.id },
     })
+
+    revalidateTag(`user-campaigns:${authResult.user.userId}`)
 
     return NextResponse.json({ success: true })
 

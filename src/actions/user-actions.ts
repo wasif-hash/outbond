@@ -401,7 +401,7 @@ export async function initializeMainAdmin(): Promise<UserResponse> {
     }
 
     // Create a secure default password (should be changed after first login)
-    const defaultPassword = 'CWT_Admin_2024!'
+    const defaultPassword = 'CWTAdmin2024!'
     const hashedPassword = await bcrypt.hash(defaultPassword, 12)
 
     const adminUser = await prisma.user.create({

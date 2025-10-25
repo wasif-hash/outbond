@@ -2,7 +2,7 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
 import crypto from 'crypto'
-import { ApolloLead } from './apollo'
+import { ApolloLead } from './apollo/apollo'
 
 export const LEAD_SHEET_COLUMNS = [
   'Email',

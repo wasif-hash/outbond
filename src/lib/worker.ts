@@ -3,7 +3,7 @@ import { Worker, Job } from 'bullmq'
 import type { Lead, Prisma } from '@prisma/client'
 import { redis, LeadFetchJobData } from './queue'
 import { prisma } from './prisma'
-import { apollo, ApolloError, ApolloSearchFilters, ApolloLead, ApolloSearchResponse } from './apollo'
+import { apollo, ApolloError, ApolloSearchFilters, ApolloLead, ApolloSearchResponse } from './apollo/apollo'
 import { generateSmartLeadSummary } from './gemini'
 import { generateLeadSummary, SheetLeadRow, sanitizeEmailForSheet, chunkArray } from './utils'
 import { 
@@ -109,7 +109,8 @@ export class LeadFetchWorker {
         return
       }
 
-      if (!campaign.user.googleTokens[0]) {
+      const googleToken = campaign.user.googleTokens
+      if (!googleToken) {
         throw new Error(`No Google token found for user ${userId}`)
       }
 
@@ -353,7 +354,6 @@ export class LeadFetchWorker {
       }
 
       try {
-        const googleToken = campaign.user.googleTokens[0]
         const oauth2Client = await createAuthorizedClient(
           googleToken.accessToken,
           googleToken.refreshToken

@@ -2,7 +2,7 @@ import { Worker, Job } from 'bullmq'
 
 import { emailSendQueue, redis, type EmailSendQueueData } from '@/lib/queue'
 import { prisma } from '@/lib/prisma'
-import { sendGmailMessage, ensureFreshGmailToken } from '@/lib/google-gmail'
+import { sendGmailMessage, ensureFreshGmailToken, GmailUnauthorizedClientError } from '@/lib/google-gmail'
 import { createEmailSendRateLimit } from '@/lib/rate-limit'
 
 const EMAIL_STATUS = {
@@ -14,9 +14,7 @@ const EMAIL_STATUS = {
   CANCELLED: 'CANCELLED',
 } as const
 
-type EmailStatus = typeof EMAIL_STATUS[keyof typeof EMAIL_STATUS]
-
-const db = prisma as any
+const db = prisma
 
 export class EmailSendWorker {
   private worker: Worker
@@ -72,6 +70,17 @@ export class EmailSendWorker {
       throw new Error('Gmail account missing or mismatched')
     }
 
+    if (!gmailAccount.accessToken || !gmailAccount.refreshToken) {
+      await db.emailSendJob.update({
+        where: { id: jobId },
+        data: {
+          status: EMAIL_STATUS.FAILED,
+          error: 'Gmail account needs to be reconnected before sending emails.',
+        },
+      })
+      throw new GmailUnauthorizedClientError('Missing Gmail credentials on record')
+    }
+
     const limiter = createEmailSendRateLimit(userId)
     const check = await limiter.checkAndConsume(1)
     if (!check.allowed) {
@@ -108,7 +117,21 @@ export class EmailSendWorker {
       })
     } catch (error) {
       console.error('Failed to send Gmail message:', error)
-      const errMsg = error instanceof Error ? error.message : 'Unknown Gmail error'
+      const errMsg =
+        error instanceof GmailUnauthorizedClientError
+          ? 'Gmail access is no longer authorized. Enable the Gmail API for your Google Cloud project and reconnect this account.'
+          : error instanceof Error
+            ? error.message
+            : 'Unknown Gmail error'
+
+      if (error instanceof GmailUnauthorizedClientError) {
+        await db.gmailAccount.delete({
+          where: { id: gmailAccount.id },
+        }).catch((deleteError: unknown) => {
+          console.error('Failed to delete Gmail account after unauthorized error:', deleteError)
+        })
+      }
+
       await db.emailSendJob.update({
         where: { id: jobId },
         data: {

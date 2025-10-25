@@ -1,12 +1,13 @@
 // src/app/api/campaigns/route.ts
 "use server"
+import { revalidateTag } from 'next/cache'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
 
 import { generateIdempotencyKey } from '@/lib/utils'
-import { getCampaignsForUser } from '@/lib/campaigns'
+import { getCampaignsForUser } from '@/lib/apollo/campaigns'
 import { z } from 'zod'
 import { enqueueJob } from '@/lib/queue'
 
@@ -36,7 +37,7 @@ export async function POST(request: NextRequest) {
     // Verify Google Sheet belongs to user
     const googleSheet = await prisma.googleSheet.findFirst({
       where: {
-        id: validatedData.googleSheetId,
+        spreadsheetId: validatedData.googleSheetId,
         userId: authResult.user.userId,
       },
     })
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest) {
       nicheOrJobTitle: validatedData.jobTitles, // Already joined by schema transform
       keywords: validatedData.keywords, // Already handled by schema transform
       location: validatedData.locations, // Already joined by schema transform
-      googleSheetId: validatedData.googleSheetId,
+      googleSheetId: googleSheet.id,
       maxLeads: validatedData.maxLeads,
       pageSize: validatedData.pageSize,
       ...(validatedData.includeDomains ? { includeDomains: validatedData.includeDomains } : {}),
@@ -109,6 +110,8 @@ export async function POST(request: NextRequest) {
       jobId: campaignJob.id,
       userId: authResult.user.userId,
     })
+
+    revalidateTag(`user-campaigns:${authResult.user.userId}`)
 
     return NextResponse.json({
       success: true,

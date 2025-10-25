@@ -5,7 +5,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
 
-import type { CampaignListResponse, CampaignSummary } from '@/lib/campaigns'
+import type { CampaignListResponse, CampaignSummary } from '@/lib/apollo/campaigns'
 import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
 
 export type Campaign = CampaignSummary

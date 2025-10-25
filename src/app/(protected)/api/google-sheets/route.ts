@@ -1,20 +1,28 @@
 import { NextResponse, NextRequest } from 'next/server';
-import { verifyAuth } from '@/lib/auth';
 
+import { verifyAuth } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { createAuthorizedClient, getUserSpreadsheets, refreshTokenIfNeeded } from '@/lib/google-sheet/google-sheet';
+import {
+  GoogleDriveApiDisabledError,
+  createAuthorizedClient,
+  getUserSpreadsheets,
+  refreshTokenIfNeeded,
+} from '@/lib/google-sheet/google-sheet';
 import { GoogleSheetsListResponse } from '@/types/google-sheet';
 
-
 export async function GET(request: NextRequest) {
+  let userId: string | null = null;
+
   try {
     const authResult = await verifyAuth(request);
     if (!authResult.success || !authResult.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    userId = authResult.user.userId;
+
     const tokenRecord = await prisma.googleOAuthToken.findUnique({
-      where: { userId: authResult.user.userId },
+      where: { userId },
     });
 
     if (!tokenRecord) {
@@ -26,21 +34,19 @@ export async function GET(request: NextRequest) {
       tokenRecord.refreshToken
     );
 
-    // Check if token needs refresh
     if (new Date() >= tokenRecord.expiresAt) {
-      await refreshTokenIfNeeded(oauth2Client, tokenRecord, authResult.user.userId);
+      await refreshTokenIfNeeded(oauth2Client, tokenRecord, userId);
     }
 
     const spreadsheets = await getUserSpreadsheets(oauth2Client);
 
-    // Store/update spreadsheets in database for this user
     for (const spreadsheet of spreadsheets) {
       await prisma.googleSheet.upsert({
-        where: { 
+        where: {
           userId_spreadsheetId: {
-            userId: authResult.user.userId,
-            spreadsheetId: spreadsheet.id
-          }
+            userId,
+            spreadsheetId: spreadsheet.id,
+          },
         },
         update: {
           title: spreadsheet.name,
@@ -48,7 +54,7 @@ export async function GET(request: NextRequest) {
           lastUsedAt: new Date(),
         },
         create: {
-          userId: authResult.user.userId,
+          userId,
           spreadsheetId: spreadsheet.id,
           spreadsheetUrl: spreadsheet.webViewLink,
           title: spreadsheet.name,
@@ -61,6 +67,35 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(response);
   } catch (error) {
     console.error('Get sheets error:', error);
+
+    if (error instanceof GoogleDriveApiDisabledError && userId) {
+      const storedSheets = await prisma.googleSheet.findMany({
+        where: { userId },
+        orderBy: { lastUsedAt: 'desc' },
+      });
+
+      if (storedSheets.length > 0) {
+        const response: GoogleSheetsListResponse = {
+          spreadsheets: storedSheets.map((sheet) => ({
+            id: sheet.spreadsheetId,
+            name: sheet.title,
+            webViewLink: sheet.spreadsheetUrl,
+          })),
+          warning: error.message,
+        };
+
+        return NextResponse.json(response);
+      }
+
+      return NextResponse.json(
+        {
+          error: error.message,
+          requiresDriveEnable: true,
+        },
+        { status: 503 }
+      );
+    }
+
     return NextResponse.json({ error: 'Failed to fetch sheets' }, { status: 500 });
   }
 }

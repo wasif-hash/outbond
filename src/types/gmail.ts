@@ -3,4 +3,7 @@ export interface GmailConnectionStatus {
   emailAddress: string | null
   expiresAt: string | null
   willRefresh: boolean
+  requiresReauth?: boolean
+  lastActiveAt?: string | Date | null
+  inactiveSince?: string | Date | null
 }

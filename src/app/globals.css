@@ -147,6 +147,16 @@
   --status-bounce: 0 84% 60%;
 }
 
+@keyframes spin-fast {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-fast {
+  animation: spin-fast 0.45s linear infinite;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -157,7 +167,7 @@
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
   }
   
-  h1, h2, h3, h4, h5, h6 {
+h1, h2, h3, h4, h5, h6 {
     font-family: 'JetBrains Mono', Consolas, 'Liberation Mono', 'Menlo', 'Courier', monospace;
     @apply font-bold tracking-tight;
   }

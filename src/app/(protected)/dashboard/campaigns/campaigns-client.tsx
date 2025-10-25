@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { Loader2, Plus, RefreshCw, Pause, Play } from 'lucide-react'
+import { LoaderThree } from '@/components/ui/loader'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -12,12 +13,11 @@ import { CampaignStatusBadge } from '@/components/campaigns/CampaignStatusBadge'
 import { CampaignActions } from '@/components/campaigns/CampaignActions'
 import { CampaignProgressIndicator } from '@/components/campaigns/CampaignProgressIndicator'
 import { CreateCampaignForm } from '@/components/campaigns/createCampaignForm'
-
 import { useCampaigns } from '@/hooks/useCampaigns'
 import { useCampaignStatus } from '@/hooks/useCampaignStatus'
 
 import { formatRelativeTime } from '@/lib/utils'
-import type { CampaignListResponse, Campaign } from '@/lib/campaigns'
+import type { CampaignListResponse, Campaign } from '@/lib/apollo/campaigns'
 
 interface CampaignsClientProps {
   initialData: CampaignListResponse
@@ -271,9 +271,9 @@ export function CampaignsClient({ initialData }: CampaignsClientProps) {
 
       {loading && campaigns.length === 0 ? (
         <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-border/60">
-          <div className="flex items-center gap-3 text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading campaigns…
+          <div className="flex flex-col items-center gap-3">
+            <LoaderThree />
+            <span className="sr-only">Loading campaigns…</span>
           </div>
         </div>
       ) : campaigns.length === 0 ? (

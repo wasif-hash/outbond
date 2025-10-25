@@ -1,15 +1,25 @@
 'use client'
 
-import { Mail, RefreshCw, LinkIcon, Unlink } from 'lucide-react'
+import { Mail, RefreshCw, LinkIcon, Unlink, CheckCircle2, XCircle, Clock } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useGmail } from '@/hooks/useGmail'
 
-const formatTimestamp = (timestamp: number | null) => {
-  if (!timestamp) return null
+const formatTimestamp = (timestamp: number | string | Date | null | undefined) => {
+  if (timestamp === null || timestamp === undefined) return null
+  let value: number | null = null
+  if (typeof timestamp === 'number') {
+    value = timestamp
+  } else if (typeof timestamp === 'string') {
+    const parsed = Date.parse(timestamp)
+    value = Number.isNaN(parsed) ? null : parsed
+  } else if (timestamp instanceof Date) {
+    value = timestamp.getTime()
+  }
+  if (value === null) return null
   try {
-    return new Date(timestamp).toLocaleString()
+    return new Date(value).toLocaleString()
   } catch {
     return null
   }
@@ -54,8 +64,22 @@ export function GmailConnectPanel() {
           <div>
             <div className="text-sm text-muted-foreground">Status</div>
             <div className="flex items-center gap-2">
-              <Badge variant={status?.isConnected ? 'positive' : 'neutral'}>
-                {status?.isConnected ? 'Connected' : 'Not Connected'}
+              <Badge
+                variant={
+                  status?.isConnected ? 'positive' : status?.requiresReauth ? 'secondary' : 'neutral'
+                }
+                className={`flex items-center gap-1 ${
+                  status?.isConnected ? 'bg-emerald-500 text-white border-transparent hover:bg-emerald-500/90' : ''
+                }`}
+              >
+                {status?.isConnected ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                ) : status?.requiresReauth ? (
+                  <Clock className="h-3.5 w-3.5" />
+                ) : (
+                  <XCircle className="h-3.5 w-3.5" />
+                )}
+                {status?.isConnected ? 'Connected' : status?.requiresReauth ? 'Reconnect soon' : 'Not Connected'}
               </Badge>
               {status?.emailAddress && (
                 <span className="text-sm font-mono text-muted-foreground">{status.emailAddress}</span>
@@ -107,13 +131,29 @@ export function GmailConnectPanel() {
               Refresh token renews automatically before <span className="font-medium">{new Date(status.expiresAt).toLocaleString()}</span>.
             </div>
           )}
+          {status?.isConnected && status.lastActiveAt && (
+            <div>
+              Connection refreshed <span className="font-medium">{formatTimestamp(status.lastActiveAt)}</span>.
+            </div>
+          )}
           {formatTimestamp(lastFetched) && (
             <div>
               Last checked <span className="font-medium">{formatTimestamp(lastFetched)}</span>.
             </div>
           )}
+          {status?.inactiveSince && !status.isConnected && (
+            <div>
+              Connection paused since <span className="font-medium">{formatTimestamp(status.inactiveSince)}</span>. Reconnect to resume sending.
+            </div>
+          )}
         </div>
       </div>
+
+      {status?.requiresReauth && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          We paused sending because this Gmail account has been inactive for a few days. Reconnect to resume outreach.
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-lg border border-border p-4">

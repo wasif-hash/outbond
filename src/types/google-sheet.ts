@@ -39,4 +39,5 @@ export interface GoogleAuthResponse {
 
 export interface GoogleSheetsListResponse {
   spreadsheets: GoogleSpreadsheet[];
+  warning?: string;
 }

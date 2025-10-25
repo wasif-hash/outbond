@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { generateOutreachEmailDraft } from '@/lib/gemini'
+import { formatEmailBody } from '@/lib/email/format'
 
 const MAX_LEADS_PER_REQUEST = 50
 
@@ -20,9 +21,8 @@ interface SenderContext {
   company?: string | null
   valueProp?: string | null
   callToAction?: string | null
+  prompt?: string | null
 }
-
-const db = prisma as any
 
 export async function POST(request: NextRequest) {
   const authResult = await verifyAuth(request)
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Too many leads; max ${MAX_LEADS_PER_REQUEST} per request` }, { status: 400 })
   }
 
-  const gmailAccount = await db.gmailAccount.findUnique({ where: { userId: authResult.user.userId } })
+  const gmailAccount = await prisma.gmailAccount.findUnique({ where: { userId: authResult.user.userId } })
   if (!gmailAccount) {
     return NextResponse.json({ error: 'Gmail account not connected' }, { status: 409 })
   }
@@ -51,7 +51,8 @@ export async function POST(request: NextRequest) {
   const drafts = [] as Array<{
     email: string
     subject: string
-    body: string
+    bodyHtml: string
+    bodyText: string
   }>
 
   for (const lead of body.leads) {
@@ -69,12 +70,22 @@ export async function POST(request: NextRequest) {
       senderCompany: body.sender?.company || undefined,
       senderValueProp: body.sender?.valueProp || undefined,
       callToAction: body.sender?.callToAction || undefined,
+      customInstructions: body.sender?.prompt || undefined,
     })
+
+    if (!draft?.body) {
+      console.warn('Gemini returned no structured draft for', lead.email)
+      continue
+    }
+
+    const subject = draft.subject?.trim() || defaultSubject(lead)
+    const { html, text } = formatEmailBody(draft.body)
 
     drafts.push({
       email: lead.email,
-      subject: draft?.subject || defaultSubject(lead),
-      body: draft?.body || defaultBody(lead, body.sender, gmailAccount.emailAddress),
+      subject,
+      bodyHtml: html,
+      bodyText: text,
     })
   }
 
@@ -84,28 +95,4 @@ export async function POST(request: NextRequest) {
 function defaultSubject(lead: LeadDraftInput): string {
   const target = lead.company || lead.firstName || 'there'
   return `Quick idea for ${target}`
-}
-
-function defaultBody(
-  lead: LeadDraftInput,
-  sender: SenderContext | undefined,
-  senderEmail: string,
-): string {
-  const greeting = lead.firstName ? `Hi ${lead.firstName},` : 'Hello,'
-  const companyLine = lead.company ? `I came across ${lead.company} and thought of a quick way we might help.` : 'I had a quick idea that could help your team.'
-  const valueProp = sender?.valueProp || 'We help operators scale outbound without sacrificing personalization.'
-  const cta = sender?.callToAction || 'Would you be open to a 15 minute chat later this week?'
-
-  return [
-    greeting,
-    '',
-    companyLine,
-    '',
-    valueProp,
-    '',
-    cta,
-    '',
-    `Best,`,
-    sender?.name || senderEmail,
-  ].join('\n')
 }

@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -14,129 +8,103 @@ datasource db {
 }
 
 model User {
-  id        String    @id @default(cuid())
-  email     String    @unique
-  role      String    @default("user")
-  password  String
-  isInvited Boolean   @default(false)
-  invitedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-
-  googleTokens GoogleOAuthToken[]
-  googleSheets GoogleSheet[]
-  gmailAccounts GmailAccount[]
+  id            String            @id @default(cuid())
+  email         String            @unique
+  role          String            @default("user")
+  password      String
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  invitedAt     DateTime?
+  isInvited     Boolean           @default(false)
+  campaigns     Campaign[]
   emailSendJobs EmailSendJob[]
-  campaigns    Campaign[]
-  leads        Lead[]
+  gmailAccounts GmailAccount?
+  googleTokens  GoogleOAuthToken?
+  googleSheets  GoogleSheet[]
+  leads         Lead[]
 
   @@map("users")
 }
 
 model GoogleOAuthToken {
   id           String   @id @default(cuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String   @unique
   accessToken  String
   refreshToken String
   expiresAt    DateTime
   scope        String
-  tokenType    String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  tokenType    String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId]) // 1 Google account per user (simplest)
   @@index([userId])
 }
 
 model GoogleSheet {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  spreadsheetId  String // 1BxiMV...
-  spreadsheetUrl String
+  id             String     @id @default(cuid())
+  userId         String
+  spreadsheetId  String
   title          String
-  sheetId        Int? // gid
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  lastUsedAt     DateTime?
+  range          String?
+  sheetId        Int?
   sheetTitle     String?
-  range          String? // e.g. Leads!A1:Z
-
-  lastUsedAt DateTime?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-
-  campaigns Campaign[]
+  spreadsheetUrl String
+  campaigns      Campaign[]
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, spreadsheetId])
   @@index([userId])
 }
 
 model Campaign {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+  id              String         @id @default(cuid())
+  userId          String
   name            String
-  nicheOrJobTitle String // Comma-separated job titles
-  keywords        String // Comma-separated keywords
-  location        String // Comma-separated locations
-  includeDomains  String? // Comma-separated domain whitelist
-  excludeDomains  String? // Comma-separated domain blacklist
-
-  // Google Sheet info
-  googleSheetId String
-  googleSheet   GoogleSheet @relation(fields: [googleSheetId], references: [id])
-
-  // Configuration
-  maxLeads Int     @default(1000)
-  pageSize Int     @default(25) // Apollo default page size
-  isActive Boolean @default(true)
-  source   String  @default("apollo") // Source of campaign data provider
-  searchMode String @default("balanced") // balanced, conserve
-
-  // Metadata
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  campaignJobs CampaignJob[]
-  leads        Lead[]
-  emailSendJobs EmailSendJob[]
+  nicheOrJobTitle String
+  keywords        String
+  location        String
+  googleSheetId   String
+  maxLeads        Int            @default(1000)
+  pageSize        Int            @default(25)
+  isActive        Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  excludeDomains  String?
+  includeDomains  String?
+  source          String         @default("apollo")
+  searchMode      String         @default("balanced")
+  googleSheet     GoogleSheet    @relation(fields: [googleSheetId], references: [id])
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaignJobs    CampaignJob[]
+  emailSendJobs   EmailSendJob[]
+  leads           Lead[]
 
   @@index([userId])
   @@index([userId, isActive])
 }
 
 model CampaignJob {
-  id         String   @id @default(cuid())
-  campaignId String
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-
-  // Job control
-  idempotencyKey String    @unique
-  status         JobStatus @default(PENDING)
-
-  // Attempt tracking
-  attemptCount Int @default(0)
-  maxAttempts  Int @default(5)
-
-  // Timing
-  startedAt  DateTime?
-  finishedAt DateTime?
-  nextRunAt  DateTime?
-
-  // Results
-  totalPages     Int     @default(0)
-  leadsProcessed Int     @default(0)
-  leadsWritten   Int     @default(0)
+  id             String       @id @default(cuid())
+  campaignId     String
+  idempotencyKey String       @unique
+  status         JobStatus    @default(PENDING)
+  attemptCount   Int          @default(0)
+  maxAttempts    Int          @default(5)
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  nextRunAt      DateTime?
+  totalPages     Int          @default(0)
+  leadsProcessed Int          @default(0)
+  leadsWritten   Int          @default(0)
   lastError      String?
-
-  // Metadata
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  jobAttempts JobAttempt[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  campaign       Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  jobAttempts    JobAttempt[]
 
   @@index([status])
   @@index([nextRunAt])
@@ -144,117 +112,123 @@ model CampaignJob {
 }
 
 model JobAttempt {
-  id            String      @id @default(cuid())
-  campaignJobId String
-  campaignJob   CampaignJob @relation(fields: [campaignJobId], references: [id], onDelete: Cascade)
-
-  attemptNumber Int
-  status        JobStatus
-  startedAt     DateTime  @default(now())
-  finishedAt    DateTime?
-  error         String?
-
-  // Progress tracking
-  pagesProcessed Int @default(0)
-  leadsFound     Int @default(0)
-  leadsWritten   Int @default(0)
+  id             String      @id @default(cuid())
+  campaignJobId  String
+  attemptNumber  Int
+  status         JobStatus
+  startedAt      DateTime    @default(now())
+  finishedAt     DateTime?
+  error          String?
+  pagesProcessed Int         @default(0)
+  leadsFound     Int         @default(0)
+  leadsWritten   Int         @default(0)
+  campaignJob    CampaignJob @relation(fields: [campaignJobId], references: [id], onDelete: Cascade)
 
   @@index([campaignJobId])
 }
 
 model Lead {
-  id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  campaignId String
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-
-  // Lead data
-  email       String
-  firstName   String?
-  lastName    String?
-  company     String?
-  jobTitle    String?
-  website     String?
-  linkedinUrl String?
-  summary     String? // AI-generated summary for Apollo leads
-  location    String?
-  industry    String?
-
-  // Apollo-specific fields
-  companySize        String?
+  id                 String   @id @default(cuid())
+  userId             String
+  campaignId         String
+  email              String
+  firstName          String?
+  lastName           String?
+  company            String?
+  jobTitle           String?
+  website            String?
+  linkedinUrl        String?
+  industry           String?
+  location           String?
+  source             String   @default("apollo")
+  tags               String[] @default([])
+  isValid            Boolean  @default(true)
+  isSuppressed       Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
   companyLinkedinUrl String?
+  companySize        String?
   domain             String?
+  summary            String?
+  campaign           Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Metadata
-  source String   @default("apollo") // apollo, manual, import
-  tags   String[] @default([])
-
-  // Status tracking
-  isValid      Boolean @default(true)
-  isSuppressed Boolean @default(false)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([email, campaignId]) // Prevent duplicates within campaign
+  @@unique([email, campaignId])
   @@index([userId])
   @@index([campaignId])
   @@index([email])
 }
 
 model GmailAccount {
-  id            String   @id @default(cuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  emailAddress  String
+  id            String         @id @default(cuid())
+  userId        String         @unique
+  emailAddress  String         @unique
   accessToken   String
   refreshToken  String
   expiresAt     DateTime
   scope         String
   tokenType     String
   historyId     String?
-  connectedAt   DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
+  connectedAt   DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
   emailSendJobs EmailSendJob[]
-
-  @@unique([userId])
-  @@unique([emailAddress])
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model EmailSendJob {
-  id             String           @id @default(cuid())
-  userId         String
-  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  campaignId     String?
-  campaign       Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  gmailAccountId String
-  gmailAccount   GmailAccount     @relation(fields: [gmailAccountId], references: [id], onDelete: Cascade)
-
-  leadEmail      String
-  leadFirstName  String?
-  leadLastName   String?
-  leadCompany    String?
-  leadSummary    String?
-  sheetRowRef    String?
-
-  subject        String
-  bodyHtml       String
-  bodyText       String?
-
-  status         EmailSendStatus  @default(PENDING)
-  error          String?
-  scheduledAt    DateTime?        @default(now())
-  sentAt         DateTime?
-
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                   String          @id @default(cuid())
+  userId               String
+  campaignId           String?
+  gmailAccountId       String
+  leadEmail            String
+  leadFirstName        String?
+  leadLastName         String?
+  leadCompany          String?
+  leadSummary          String?
+  sheetRowRef          String?
+  manualCampaignId     String?
+  manualCampaignName   String?
+  manualCampaignSource String?
+  subject              String
+  bodyHtml             String
+  bodyText             String?
+  status               EmailSendStatus @default(PENDING)
+  error                String?
+  scheduledAt          DateTime?       @default(now())
+  sentAt               DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  campaign             Campaign?       @relation(fields: [campaignId], references: [id])
+  gmailAccount         GmailAccount    @relation(fields: [gmailAccountId], references: [id], onDelete: Cascade)
+  user                 User            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([campaignId])
   @@index([gmailAccountId])
   @@index([status])
+  @@index([manualCampaignId])
+}
+
+model RateLimit {
+  id         String   @id @default(cuid())
+  key        String   @unique
+  tokens     Int      @default(0)
+  lastRefill DateTime @default(now())
+  maxTokens  Int
+  refillRate Int
+
+  @@index([key])
+}
+
+model JobLock {
+  id        String   @id @default(cuid())
+  lockKey   String   @unique
+  ownerId   String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([lockKey])
+  @@index([expiresAt])
 }
 
 enum EmailSendStatus {
@@ -264,28 +238,6 @@ enum EmailSendStatus {
   SENT
   FAILED
   CANCELLED
-}
-
-model RateLimit {
-  id         String   @id @default(cuid())
-  key        String   @unique // global, tenant:userId, campaign:campaignId
-  tokens     Int      @default(0)
-  lastRefill DateTime @default(now())
-  maxTokens  Int
-  refillRate Int // tokens per second
-
-  @@index([key])
-}
-
-model JobLock {
-  id        String   @id @default(cuid())
-  lockKey   String   @unique // campaign:campaignId, global:lead-fetch
-  ownerId   String // worker/process identifier
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  @@index([lockKey])
-  @@index([expiresAt])
 }
 
 enum JobStatus {

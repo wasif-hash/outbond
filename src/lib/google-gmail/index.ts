@@ -1,7 +1,7 @@
-import { google } from 'googleapis'
+import { google } from 'googleapis';
 
-import { newOAuth2Client } from '@/lib/google-sheet/google-auth'
-import { prisma } from '@/lib/prisma'
+import { newOAuth2Client } from '@/lib/google-sheet/google-auth';
+import { prisma } from '@/lib/prisma';
 
 export const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
@@ -21,10 +21,17 @@ type GmailAccountRecord = {
   historyId?: string | null
 }
 
-const db = prisma as any
+const db = prisma as any;
+
+export class GmailUnauthorizedClientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GmailUnauthorizedClientError';
+  }
+}
 
 export function createGmailOAuthClient(redirectPath: string = '/api/auth/google/gmail/callback') {
-  return newOAuth2Client(redirectPath)
+  return newOAuth2Client(redirectPath);
 }
 
 export async function createAuthorizedGmailClient(
@@ -32,12 +39,12 @@ export async function createAuthorizedGmailClient(
   refreshToken: string,
   redirectPath?: string,
 ) {
-  const oauth2Client = createGmailOAuthClient(redirectPath)
+  const oauth2Client = createGmailOAuthClient(redirectPath);
   oauth2Client.setCredentials({
     access_token: accessToken,
     refresh_token: refreshToken,
-  })
-  return oauth2Client
+  });
+  return oauth2Client;
 }
 
 export async function refreshGmailToken(
@@ -47,14 +54,14 @@ export async function refreshGmailToken(
   const oauth2Client = await createAuthorizedGmailClient(
     gmailAccount.accessToken,
     gmailAccount.refreshToken,
-    redirectPath,
-  )
+    redirectPath
+  );
 
   try {
-    const { credentials } = await oauth2Client.refreshAccessToken()
-    const nextAccessToken = credentials.access_token || gmailAccount.accessToken
-    const nextRefreshToken = credentials.refresh_token || gmailAccount.refreshToken
-    const expiryMs = credentials.expiry_date || Date.now() + 55 * 60 * 1000
+    const { credentials } = await oauth2Client.refreshAccessToken();
+    const nextAccessToken = credentials.access_token || gmailAccount.accessToken;
+    const nextRefreshToken = credentials.refresh_token || gmailAccount.refreshToken;
+    const expiryMs = credentials.expiry_date || Date.now() + 55 * 60 * 1000;
 
     return await db.gmailAccount.update({
       where: { id: gmailAccount.id },
@@ -65,10 +72,26 @@ export async function refreshGmailToken(
         tokenType: credentials.token_type || gmailAccount.tokenType,
         scope: credentials.scope || gmailAccount.scope,
       },
-    }) as GmailAccountRecord
+    }) as GmailAccountRecord;
   } catch (error) {
-    console.error('Gmail token refresh failed:', error)
-    throw new Error('Failed to refresh Gmail token')
+    const rawMessage =
+      (error as any)?.response?.data?.error_description ||
+      (error as any)?.response?.data?.error ||
+      (error as Error)?.message ||
+      'Unknown Gmail token error';
+    const isUnauthorizedClient =
+      rawMessage.toLowerCase().includes('unauthorized') ||
+      (error as any)?.code === 401;
+
+    console.error('Gmail token refresh failed:', error);
+
+    if (isUnauthorizedClient) {
+      throw new GmailUnauthorizedClientError(
+        'Google rejected the Gmail OAuth client. Ensure the Gmail API is enabled for this Google Cloud project and reconnect the Gmail account.'
+      );
+    }
+
+    throw new Error('Failed to refresh Gmail token');
   }
 }
 

@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback, useTransition } from "react"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { getApiClient } from '@/lib/http-client'
 import { usePathname, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -19,8 +20,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import "../../globals.css"
-
 import { toast } from "sonner"
+import { LoaderThree } from "@/components/ui/loader"
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: BarChart3 },
@@ -33,12 +34,25 @@ const navigation = [
 ]
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const [queryClient] = useState(() => new QueryClient())
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
+  const [isPending, startTransition] = useTransition()
   const client = useMemo(() => getApiClient(), [])
 
   const pathname = usePathname()
   const router = useRouter()
+
+  const handleRouteChange = useCallback((href: string) => {
+    if (href === pathname) {
+      setSidebarOpen(false)
+      return
+    }
+    startTransition(() => {
+      setSidebarOpen(false)
+      router.push(href)
+    })
+  }, [pathname, router, startTransition])
 
   const handleLogout = async () => {
     try {
@@ -61,6 +75,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
+    <QueryClientProvider client={queryClient}>
     <div className="min-h-screen bg-background">
       {/* Mobile sidebar */}
       {sidebarOpen && (
@@ -80,7 +95,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   <Link
                     key={item.name}
                     href={item.href}
-                    onClick={() => setSidebarOpen(false)}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      handleRouteChange(item.href)
+                    }}
                     className={cn(
                       "group flex items-center px-3 py-2 text-sm font-medium rounded-lg mb-1 transition-colors",
                       isActive
@@ -111,6 +129,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <Link
                   key={item.name}
                   href={item.href}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    handleRouteChange(item.href)
+                  }}
                   className={cn(
                     "group flex items-center px-3 py-2 text-sm font-medium rounded-lg mb-1 transition-colors",
                     isActive
@@ -171,8 +193,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Page content */}
-        <main className="min-h-[calc(100vh-4rem)]">{children}</main>
-      </div>
+        <main className="min-h-[calc(100vh-4rem)]">
+      {children}
+    </main>
+  </div>
+
+      {isPending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm">
+          <LoaderThree />
+          <span className="sr-only">Loading dashboard view…</span>
+        </div>
+      )}
     </div>
+    </QueryClientProvider>
   )
 }

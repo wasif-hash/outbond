@@ -1,4 +1,5 @@
 // src/app/api/campaigns/[id]/retry/route.ts
+import { revalidateTag } from 'next/cache'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
@@ -65,6 +66,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       userId: authResult.user.userId,
       isRetry: true,
     })
+
+    revalidateTag(`user-campaigns:${authResult.user.userId}`)
 
     return NextResponse.json({
       success: true,
