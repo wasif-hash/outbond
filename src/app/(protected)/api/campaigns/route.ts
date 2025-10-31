@@ -1,10 +1,10 @@
 // src/app/api/campaigns/route.ts
-"use server"
 import { revalidateTag } from 'next/cache'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import type { Campaign, Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import type { Campaign } from '@prisma/client'
 
 import { generateIdempotencyKey } from '@/lib/utils'
 import { getCampaignsForUser } from '@/lib/apollo/campaigns'

@@ -29,7 +29,7 @@ export async function GET() {
 
     const expiresAtMs = account.expiresAt ? new Date(account.expiresAt).getTime() : 0
     const willRefresh = !expiresAtMs || expiresAtMs - Date.now() <= REFRESH_THRESHOLD_MS
-    const lastActiveAt = account.connectedAt ?? account.updatedAt ?? account.createdAt
+    const lastActiveAt = account.connectedAt ?? account.updatedAt
     const lastActiveMs = lastActiveAt ? new Date(lastActiveAt).getTime() : 0
     const inactiveMs = Date.now() - lastActiveMs
 

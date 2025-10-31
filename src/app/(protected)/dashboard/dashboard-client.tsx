@@ -208,9 +208,7 @@ export function DashboardClient() {
       },
     ]
   }, [
-    analytics?.metrics.leadsWritten,
-    analytics?.metrics.outreachEmailsSent,
-    analytics?.metrics.userCount,
+    analytics,
     isLoading,
     leadTrendChange.label,
     leadTrendChange.trend,

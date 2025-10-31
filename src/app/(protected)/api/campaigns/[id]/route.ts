@@ -1,18 +1,32 @@
 // src/app/api/campaigns/[id]/route.ts
 import { revalidateTag } from 'next/cache'
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
 import { JobStatus } from '@prisma/client'
 
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { removePendingCampaignJobs } from '@/lib/queue'
 
-interface RouteParams {
-  params: { id: string }
+type RouteContext = {
+  params: Promise<Record<string, string | string[] | undefined> | undefined>
 }
 
-export async function GET(request: NextRequest, { params }: RouteParams) {
+const resolveIdParam = (value: string | string[] | undefined): string | null =>
+  Array.isArray(value) ? value[0] ?? null : typeof value === 'string' ? value : null
+
+const getCampaignId = async (context: RouteContext): Promise<string | null> => {
+  const params = await context.params
+  return resolveIdParam(params?.id)
+}
+
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
+    const campaignId = await getCampaignId(context)
+    if (!campaignId) {
+      return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
+    }
+
     const authResult = await verifyAuth(request)
     if (!authResult.success || !authResult.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -20,7 +34,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
     const campaign = await prisma.campaign.findFirst({
       where: {
-        id: params.id,
+        id: campaignId,
         userId: authResult.user.userId,
       },
       include: {
@@ -61,8 +75,13 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: RouteParams) {
+export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
+    const campaignId = await getCampaignId(context)
+    if (!campaignId) {
+      return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
+    }
+
     const authResult = await verifyAuth(request)
     if (!authResult.success || !authResult.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -73,7 +92,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
     const campaign = await prisma.campaign.findFirst({
       where: {
-        id: params.id,
+        id: campaignId,
         userId: authResult.user.userId,
       },
     })
@@ -86,7 +105,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const updatedCampaign = await prisma.campaign.update({
-      where: { id: params.id },
+      where: { id: campaignId },
       data: {
         ...(isActive !== undefined && { isActive }),
         ...(name && { name }),
@@ -97,7 +116,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     })
 
     if (isActive === false) {
-      await cancelCampaignJobs(params.id, 'Campaign paused by user')
+      await cancelCampaignJobs(campaignId, 'Campaign paused by user')
     }
 
     revalidateTag(`user-campaigns:${authResult.user.userId}`)
@@ -113,8 +132,13 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: RouteParams) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
+    const campaignId = await getCampaignId(context)
+    if (!campaignId) {
+      return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
+    }
+
     const authResult = await verifyAuth(request)
     if (!authResult.success || !authResult.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -122,7 +146,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
 
     const campaign = await prisma.campaign.findFirst({
       where: {
-        id: params.id,
+        id: campaignId,
         userId: authResult.user.userId,
       },
     })
@@ -134,10 +158,10 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    await cancelCampaignJobs(params.id, 'Campaign deleted by user')
+    await cancelCampaignJobs(campaignId, 'Campaign deleted by user')
 
     await prisma.campaign.delete({
-      where: { id: params.id },
+      where: { id: campaignId },
     })
 
     revalidateTag(`user-campaigns:${authResult.user.userId}`)

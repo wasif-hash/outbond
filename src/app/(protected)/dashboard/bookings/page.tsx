@@ -1,5 +1,4 @@
 "use client"
-import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -40,8 +39,6 @@ const calendarDays = [
 ]
 
 export default function Bookings() {
-  const [currentWeek, setCurrentWeek] = useState(0)
-
   return (
     <div className="p-6">
       <div className="mb-6">

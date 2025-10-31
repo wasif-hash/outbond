@@ -6,7 +6,7 @@ import jwt from "jsonwebtoken"
 import { newOAuth2Client } from "@/lib/google-sheet/google-auth"
 import { requireAdmin } from "@/lib/auth"
 
-export const POST = requireAdmin(async (_req, _ctx, user) => {
+export const POST = requireAdmin(async (_req, user) => {
   const nonce = crypto.randomBytes(8).toString("hex")
   const jwtSecret = process.env.JWT_SECRET
 

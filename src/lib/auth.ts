@@ -1,6 +1,6 @@
 // lib/auth.ts
 import type { User } from '@prisma/client'
-import { NextRequest } from 'next/server'
+import type { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { jwtVerify } from 'jose'
 
@@ -125,16 +125,16 @@ export async function getUserFromBearer(req: Request): Promise<User | null> {
 }
 
 export function requireAdmin(
-  handler: (req: Request, ctx: Record<string, unknown>, user: User) => Promise<Response>,
+  handler: (req: NextRequest, user: User) => Promise<Response> | Response,
 ) {
-  return async (req: Request, ctx: Record<string, unknown>) => {
+  return async (req: NextRequest) => {
     const user = await getUserFromBearer(req)
     if (!user || user.role !== "admin") {
       return new Response(JSON.stringify({ error: "Not authenticated" }), {
         status: 401, headers: { "Content-Type": "application/json" }
       })
     }
-    return handler(req, ctx, user)
+    return handler(req, user)
   }
 }
 

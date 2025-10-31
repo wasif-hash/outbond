@@ -1,20 +1,28 @@
 // src/app/api/campaigns/[id]/status/route.ts
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 
-interface RouteParams {
-  params: Promise<{ id: string }>
+type RouteContext = {
+  params: Promise<Record<string, string | string[] | undefined> | undefined>
 }
 
-export async function GET(request: NextRequest, { params }: RouteParams) {
+const resolveIdParam = (value: string | string[] | undefined): string | null =>
+  Array.isArray(value) ? value[0] ?? null : typeof value === 'string' ? value : null
+
+export async function GET(request: NextRequest, context: RouteContext) {
   try {
+    const params = await context.params
+    const campaignId = resolveIdParam(params?.id)
+    if (!campaignId) {
+      return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
+    }
+
     const authResult = await verifyAuth(request)
     if (!authResult.success || !authResult.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-
-    const { id: campaignId } = await params
 
     const campaign = await prisma.campaign.findFirst({
       where: {

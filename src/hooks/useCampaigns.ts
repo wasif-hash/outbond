@@ -32,6 +32,12 @@ export interface CampaignStatus {
     totalPages: number
     lastError: string | null
     latestAttempt: Record<string, unknown> | null
+    progress?: {
+      currentPage: number
+      totalPages: number
+      leadsProcessed: number
+      leadsWritten: number
+    }
   } | null
   totalLeads: number
 }

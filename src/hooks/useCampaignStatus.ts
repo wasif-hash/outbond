@@ -7,6 +7,13 @@ import { toast } from 'sonner'
 import { CampaignStatus } from './useCampaigns'
 import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
 
+type AttemptProgress = {
+  page?: number
+  totalPages?: number
+  leadsProcessed?: number
+  leadsWritten?: number
+}
+
 export function useCampaignStatus(campaignId: string, pollingInterval: number = 5000) {
   const [status, setStatus] = useState<CampaignStatus | null>(null)
   const [loading, setLoading] = useState(false)
@@ -44,7 +51,8 @@ export function useCampaignStatus(campaignId: string, pollingInterval: number = 
 
         // Process progress data
         if (data.latestJob.status === 'RUNNING') {
-          const progress = data.latestJob.latestAttempt?.progress || {}
+          const rawProgress = data.latestJob.latestAttempt?.progress as AttemptProgress | undefined
+          const progress: AttemptProgress = rawProgress ?? {}
           data.latestJob.progress = {
             currentPage: progress.page || data.latestJob.totalPages || 1,
             totalPages:

@@ -1,14 +1,24 @@
 // app/api/users/[id]/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { deleteUser, updateUserRole } from "@/actions/user-actions";
 import { verifyAuth } from "@/lib/auth";
 
-interface RouteParams {
-  params: { id: string };
-}
+type RouteContext = {
+  params: Promise<{ id: string | string[] | undefined } | undefined>;
+};
 
-export async function DELETE(request: NextRequest, { params }: RouteParams) {
+const resolveIdParam = (value: string | string[] | undefined): string | null =>
+  Array.isArray(value) ? value[0] ?? null : typeof value === "string" ? value : null;
+
+export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
+    const params = await context.params;
+    const id = resolveIdParam(params?.id);
+    if (!id) {
+      return NextResponse.json({ error: "Invalid user id" }, { status: 400 });
+    }
+
     const authResult = await verifyAuth(request);
     if (!authResult.success || authResult.user?.role !== "admin") {
       return NextResponse.json(
@@ -17,7 +27,7 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    const result = await deleteUser(params.id, authResult.user.email);
+    const result = await deleteUser(id, authResult.user.email);
     if (!result.success) {
       return NextResponse.json(
         { error: result.message },
@@ -35,8 +45,14 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: RouteParams) {
+export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
+    const params = await context.params;
+    const id = resolveIdParam(params?.id);
+    if (!id) {
+      return NextResponse.json({ error: "Invalid user id" }, { status: 400 });
+    }
+
     const authResult = await verifyAuth(request);
     if (!authResult.success || authResult.user?.role !== "admin") {
       return NextResponse.json(
@@ -46,7 +62,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     }
 
     const { role } = await request.json();
-    const result = await updateUserRole(params.id, role, authResult.user.email);
+    const result = await updateUserRole(id, role, authResult.user.email);
 
     if (!result.success) {
       return NextResponse.json(

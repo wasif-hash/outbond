@@ -52,9 +52,13 @@ export class LeadFetchWorker {
       console.log(`✅ Job ${job.id ?? 'unknown'} completed successfully`)
     })
 
-    this.worker.on('failed', (job: Job<LeadFetchJobData> | null, err: Error) => {
-      console.error(`❌ Job ${job?.id ?? 'unknown'} failed:`, err.message)
-    })
+    this.worker.on(
+      'failed',
+      (job: Job<LeadFetchJobData> | undefined, err: Error, _prev: string | undefined) => {
+        void _prev
+        console.error(`❌ Job ${job?.id ?? 'unknown'} failed:`, err.message)
+      }
+    )
   }
 
   private async processJob(job: Job<LeadFetchJobData>): Promise<void> {

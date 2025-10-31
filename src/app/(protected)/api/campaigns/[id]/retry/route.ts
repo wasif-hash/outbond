@@ -1,18 +1,28 @@
 // src/app/api/campaigns/[id]/retry/route.ts
 import { revalidateTag } from 'next/cache'
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 
 import { generateIdempotencyKey } from '@/lib/utils'
 import { enqueueJob } from '@/lib/queue'
 
-interface RouteParams {
-  params: { id: string }
+type RouteContext = {
+  params: Promise<Record<string, string | string[] | undefined> | undefined>
 }
 
-export async function POST(request: NextRequest, { params }: RouteParams) {
+const resolveIdParam = (value: string | string[] | undefined): string | null =>
+  Array.isArray(value) ? value[0] ?? null : typeof value === 'string' ? value : null
+
+export async function POST(request: NextRequest, context: RouteContext) {
   try {
+    const params = await context.params
+    const campaignId = resolveIdParam(params?.id)
+    if (!campaignId) {
+      return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
+    }
+
     const authResult = await verifyAuth(request)
     if (!authResult.success || !authResult.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -20,7 +30,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const campaign = await prisma.campaign.findFirst({
       where: {
-        id: params.id,
+        id: campaignId,
         userId: authResult.user.userId,
       },
     })
@@ -35,7 +45,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Check if there's already a running job
     const runningJob = await prisma.campaignJob.findFirst({
       where: {
-        campaignId: params.id,
+        campaignId,
         status: 'RUNNING',
       },
     })

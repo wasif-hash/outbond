@@ -85,10 +85,14 @@ export function RepliesClient({ replies }: RepliesClientProps) {
         {FILTER_DEFINITIONS.map((filter) => (
           <Button
             key={filter.value}
-            variant={selectedFilter === filter.value ? "plum" : "outline"}
+            variant="outline"
             size="sm"
             onClick={() => setSelectedFilter(filter.value)}
-            className="h-8"
+            className={`h-8 ${
+              selectedFilter === filter.value
+                ? "border-cwt-plum bg-cwt-plum text-white hover:bg-cwt-plum/90"
+                : ""
+            }`}
           >
             {filter.label}
             <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-xs">

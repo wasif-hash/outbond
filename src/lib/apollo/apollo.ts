@@ -478,6 +478,14 @@ export class ApolloClient {
     return leads.map((lead) => {
       const phoneNumbers = lead.phone_numbers ?? []
       let primaryPhone = ''
+      const fallbackIdentifier = [lead.first_name, lead.last_name, lead.organization?.name]
+        .filter(Boolean)
+        .join('-')
+
+      const leadId =
+        lead.id ??
+        lead.email ??
+        (fallbackIdentifier || `apollo-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
 
       for (const entry of phoneNumbers) {
         if (!entry) continue
@@ -498,7 +506,7 @@ export class ApolloClient {
       }
 
       return {
-        id: lead.id,
+        id: leadId,
         first_name: lead.first_name || '',
         last_name: lead.last_name || '',
         title: lead.title || '',
