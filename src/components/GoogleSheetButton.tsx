@@ -30,8 +30,8 @@ export default function GoogleSheetsButton() {
   const wasExpiredRef = useRef<boolean>(false);
 
   useEffect(() => {
-    checkConnectionStatus();
-  }, []);
+    void checkConnectionStatus();
+  }, [checkConnectionStatus]);
 
   useEffect(() => {
     const isConnected = Boolean(status?.isConnected && !status?.isExpired);
@@ -73,8 +73,12 @@ export default function GoogleSheetsButton() {
           loading={loading}
           onConnect={connectGoogleAccount}
           onDisconnect={disconnectGoogleAccount}
-          onFetchSpreadsheets={fetchSpreadsheets}
-          onRefreshStatus={checkConnectionStatus}
+          onFetchSpreadsheets={() => {
+            void fetchSpreadsheets({ force: true });
+          }}
+          onRefreshStatus={() => {
+            void checkConnectionStatus();
+          }}
         />
 
         <SpreadsheetsList

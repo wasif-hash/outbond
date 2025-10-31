@@ -1,242 +1,335 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
-import { GoogleSpreadsheet, SpreadsheetData, GoogleConnectionStatus } from '@/types/google-sheet'
-import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
+import {
+  QueryFunctionContext,
+  useIsFetching,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 
-type RequestKey = 'status' | 'connect' | 'disconnect' | 'spreadsheets' | 'sheetData'
+import {
+  GoogleConnectionStatus,
+  GoogleSpreadsheet,
+  GoogleSheetsListResponse,
+  SpreadsheetData,
+} from '@/types/google-sheet'
+import { getApiClient } from '@/lib/http-client'
 
-let cachedStatus: GoogleConnectionStatus | null = null
-let cachedSpreadsheets: GoogleSpreadsheet[] = []
-let cachedSelectedSheet: SpreadsheetData | null = null
-let cachedHasFetchedSpreadsheets = false
+const STATUS_QUERY_KEY = ['googleSheets', 'status'] as const
+const SPREADSHEETS_QUERY_KEY = ['googleSheets', 'spreadsheets'] as const
+const sheetDataQueryKey = (spreadsheetId: string, range?: string) =>
+  ['googleSheets', 'sheetData', spreadsheetId, range?.trim() || '__FULL_RANGE__'] as const
 
-const resolveStateAction = <T,>(action: SetStateAction<T>, prev: T): T =>
-  typeof action === 'function' ? (action as (previous: T) => T)(prev) : action
+const STATUS_STALE_TIME = 1000 * 60 * 5
+const STATUS_GC_TIME = 1000 * 60 * 30
+const SPREADSHEETS_GC_TIME = 1000 * 60 * 60
+const SHEET_DATA_STALE_TIME = 1000 * 60 * 5
+const SHEET_DATA_GC_TIME = 1000 * 60 * 30
+
+type StatusQueryKey = typeof STATUS_QUERY_KEY
+type SpreadsheetsQueryKey = typeof SPREADSHEETS_QUERY_KEY
+type SheetDataQueryKey = ReturnType<typeof sheetDataQueryKey>
+
+const resolveAxiosError = (error: unknown, fallback: string) => {
+  if (axios.isAxiosError(error)) {
+    const responseError =
+      (error.response?.data as { error?: string; message?: string } | undefined)?.error ??
+      (error.response?.data as { error?: string; message?: string } | undefined)?.message
+    if (responseError) {
+      return responseError
+    }
+    if (error.message) {
+      return error.message
+    }
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return fallback
+}
 
 export const useGoogleSheets = () => {
-  const [statusState, setStatusState] = useState<GoogleConnectionStatus | null>(() => cachedStatus)
-  const [spreadsheetsState, setSpreadsheetsState] = useState<GoogleSpreadsheet[]>(() => cachedSpreadsheets)
-  const [selectedSheetState, setSelectedSheetState] = useState<SpreadsheetData | null>(() => cachedSelectedSheet)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [hasFetchedSpreadsheetsState, setHasFetchedSpreadsheetsState] = useState<boolean>(() => cachedHasFetchedSpreadsheets)
-
-  const setStatus = (value: SetStateAction<GoogleConnectionStatus | null>) => {
-    setStatusState((previous) => {
-      const next = resolveStateAction(value, previous)
-      cachedStatus = next
-      return next
-    })
-  }
-
-  const setSpreadsheets = (value: SetStateAction<GoogleSpreadsheet[]>) => {
-    setSpreadsheetsState((previous) => {
-      const next = resolveStateAction(value, previous)
-      cachedSpreadsheets = next
-      return next
-    })
-  }
-
-  const setSelectedSheet = (value: SetStateAction<SpreadsheetData | null>) => {
-    setSelectedSheetState((previous) => {
-      const next = resolveStateAction(value, previous)
-      cachedSelectedSheet = next
-      return next
-    })
-  }
-
-  const setHasFetchedSpreadsheets = (value: SetStateAction<boolean>) => {
-    setHasFetchedSpreadsheetsState((previous) => {
-      const next = resolveStateAction(value, previous)
-      cachedHasFetchedSpreadsheets = next
-      return next
-    })
-  }
-
-  const status = statusState
-  const spreadsheets = spreadsheetsState
-  const selectedSheet = selectedSheetState
-  const hasFetchedSpreadsheets = hasFetchedSpreadsheetsState
-
   const client = useMemo(() => getApiClient(), [])
-  const cancelMapRef = useRef<Record<RequestKey, CancelTokenSource | null>>({
-    status: null,
-    connect: null,
-    disconnect: null,
-    spreadsheets: null,
-    sheetData: null,
-  })
+  const queryClient = useQueryClient()
 
-  useEffect(() => () => {
-    ;(Object.values(cancelMapRef.current) as CancelTokenSource[])
-      .filter(Boolean)
-      .forEach((source) => source.cancel('Component unmounted'))
+  const [selectedSheet, setSelectedSheet] = useState<SpreadsheetData | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [manualLoadingCount, setManualLoadingCount] = useState(0)
+  const [hasFetchedSpreadsheets, setHasFetchedSpreadsheets] = useState<boolean>(() => {
+    return queryClient.getQueryData(SPREADSHEETS_QUERY_KEY) !== undefined
+  })
+  const [autoFetchAttempted, setAutoFetchAttempted] = useState(false)
+
+  const beginManualLoading = useCallback(() => {
+    setManualLoadingCount((count) => count + 1)
   }, [])
 
-  const replaceCancelToken = (key: RequestKey) => {
-    const existing = cancelMapRef.current[key]
-    if (existing) {
-      existing.cancel('Replaced by a new request')
-    }
-    const next = createCancelSource()
-    cancelMapRef.current[key] = next
-    return next
-  }
+  const endManualLoading = useCallback(() => {
+    setManualLoadingCount((count) => (count > 0 ? count - 1 : 0))
+  }, [])
 
-  const clearCancelToken = (key: RequestKey, source: CancelTokenSource | null) => {
-    if (source && cancelMapRef.current[key] === source) {
-      cancelMapRef.current[key] = null
-    }
-  }
+  const statusQueryFn = useCallback(
+    async ({ signal }: QueryFunctionContext<StatusQueryKey>) => {
+      const response = await client.get<GoogleConnectionStatus>('/api/google-sheets/status', { signal })
+      return response.data
+    },
+    [client],
+  )
 
-  const checkConnectionStatus = async () => {
-    let cancelSource: CancelTokenSource | null = null
+  const spreadsheetsQueryFn = useCallback(
+    async ({ signal }: QueryFunctionContext<SpreadsheetsQueryKey>) => {
+      const response = await client.get<{ spreadsheets: GoogleSpreadsheet[] }>(
+        '/api/google-sheets/stored',
+        { signal },
+      )
+      return response.data.spreadsheets ?? []
+    },
+    [client],
+  )
+
+  const sheetDataQueryFn = useCallback(
+    async ({ queryKey, signal }: QueryFunctionContext<SheetDataQueryKey>) => {
+      const [, , spreadsheetId, rangeKey] = queryKey
+      const range = rangeKey === '__FULL_RANGE__' ? undefined : rangeKey
+      const config = range ? { params: { range }, signal } : { signal }
+      const response = await client.get<SpreadsheetData>(`/api/google-sheets/${spreadsheetId}`, config)
+      return response.data
+    },
+    [client],
+  )
+
+  const statusQuery = useQuery({
+    queryKey: STATUS_QUERY_KEY,
+    queryFn: statusQueryFn,
+    enabled: false,
+    staleTime: STATUS_STALE_TIME,
+    gcTime: STATUS_GC_TIME,
+  })
+
+  const spreadsheetsQuery = useQuery({
+    queryKey: SPREADSHEETS_QUERY_KEY,
+    queryFn: spreadsheetsQueryFn,
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: SPREADSHEETS_GC_TIME,
+  })
+
+  const status = statusQuery.data ?? null
+  const spreadsheets = spreadsheetsQuery.data ?? []
+
+  const statusFetching = useIsFetching({ queryKey: STATUS_QUERY_KEY })
+  const spreadsheetsFetching = useIsFetching({ queryKey: SPREADSHEETS_QUERY_KEY })
+  const sheetDataFetching = useIsFetching({
+    predicate: (query) =>
+      Array.isArray(query.queryKey) &&
+      query.queryKey[0] === 'googleSheets' &&
+      query.queryKey[1] === 'sheetData',
+  })
+
+  const loading = manualLoadingCount > 0 || statusFetching > 0 || spreadsheetsFetching > 0 || sheetDataFetching > 0
+
+  const checkConnectionStatus = useCallback(async () => {
     try {
-      cancelSource = replaceCancelToken('status')
-      const response = await client.get<GoogleConnectionStatus>('/api/google-sheets/status', {
-        cancelToken: cancelSource.token,
+      const data = await queryClient.fetchQuery({
+        queryKey: STATUS_QUERY_KEY,
+        queryFn: statusQueryFn,
+        staleTime: STATUS_STALE_TIME,
       })
-      setStatus(response.data)
+      return data
     } catch (err) {
-      if (axios.isCancel(err)) {
-        return
+      if (!axios.isCancel(err)) {
+        console.error('Failed to check connection status:', err)
+        toast.error('Unable to verify Google Sheets connection')
       }
-      console.error('Failed to check connection status:', err)
-      toast.error('Unable to verify Google Sheets connection')
-    } finally {
-      clearCancelToken('status', cancelSource)
+      return undefined
     }
-  }
+  }, [queryClient, statusQueryFn])
 
-  const connectGoogleAccount = async () => {
-    let cancelSource: CancelTokenSource | null = null
+  const connectGoogleAccount = useCallback(async () => {
     try {
-      setLoading(true)
+      beginManualLoading()
       setError(null)
       toast.message('Redirecting to Google for authorization…')
 
-      cancelSource = replaceCancelToken('connect')
-      const response = await client.get<{ authUrl: string }>('/api/auth/google', {
-        cancelToken: cancelSource.token,
-      })
+      const response = await client.get<{ authUrl: string }>('/api/auth/google')
       window.location.href = response.data.authUrl
     } catch (err) {
-      if (axios.isCancel(err)) {
-        return
+      if (!axios.isCancel(err)) {
+        const message = 'Failed to connect Google account'
+        setError(message)
+        console.error('Connect error:', err)
+        toast.error('Failed to start Google authorization')
       }
-      setError('Failed to connect Google account')
-      console.error('Connect error:', err)
-      toast.error('Failed to start Google authorization')
     } finally {
-      clearCancelToken('connect', cancelSource)
-      setLoading(false)
+      endManualLoading()
     }
-  }
+  }, [beginManualLoading, client, endManualLoading])
 
-  const disconnectGoogleAccount = async () => {
-    let cancelSource: CancelTokenSource | null = null
+  const disconnectGoogleAccount = useCallback(async () => {
     try {
-      setLoading(true)
+      beginManualLoading()
       setError(null)
 
-      cancelSource = replaceCancelToken('disconnect')
-      await client.delete('/api/google-sheets/disconnect', {
-        cancelToken: cancelSource.token,
-      })
+      await client.delete('/api/google-sheets/disconnect')
 
       toast.success('Google Sheets disconnected')
-      setStatus(null)
-      setSpreadsheets([])
       setSelectedSheet(null)
       setHasFetchedSpreadsheets(false)
-      cachedSpreadsheets = []
-      cachedSelectedSheet = null
-      checkConnectionStatus()
+      queryClient.setQueryData(STATUS_QUERY_KEY, null)
+      queryClient.removeQueries({ queryKey: SPREADSHEETS_QUERY_KEY, exact: true })
+      queryClient.removeQueries({
+        predicate: ({ queryKey }) =>
+          Array.isArray(queryKey) && queryKey[0] === 'googleSheets' && queryKey[1] === 'sheetData',
+      })
     } catch (err) {
-      if (axios.isCancel(err)) {
-        return
+      if (!axios.isCancel(err)) {
+        const message = 'Failed to disconnect Google account'
+        setError(message)
+        console.error('Disconnect error:', err)
+        toast.error(message)
       }
-      setError('Failed to disconnect Google account')
-      console.error('Disconnect error:', err)
-      toast.error('Failed to disconnect Google account')
     } finally {
-      clearCancelToken('disconnect', cancelSource)
-      setLoading(false)
+      endManualLoading()
     }
-  }
+  }, [beginManualLoading, client, endManualLoading, queryClient])
 
-  const fetchSpreadsheets = async () => {
-    let cancelSource: CancelTokenSource | null = null
-    try {
-      setLoading(true)
-      setError(null)
+  const fetchSpreadsheets = useCallback(
+    async (options?: { force?: boolean }) => {
+      const forceRefresh = options?.force ?? false
+      const cachedSheets = queryClient.getQueryData<GoogleSpreadsheet[]>(SPREADSHEETS_QUERY_KEY)
+      const hasCachedSheets = Array.isArray(cachedSheets)
+      const hasNonEmptyCache = Boolean(cachedSheets && cachedSheets.length > 0)
+      const shouldRefreshRemote = forceRefresh || !hasFetchedSpreadsheets || !hasNonEmptyCache
+      const needsQueryFetch = !hasCachedSheets
+      let remoteRequestFailed = false
+      let remoteSheets: GoogleSpreadsheet[] | null = null
 
-      cancelSource = replaceCancelToken('spreadsheets')
-      await client.get('/api/google-sheets', {
-        cancelToken: cancelSource.token,
-      })
+      if (!shouldRefreshRemote && !needsQueryFetch && cachedSheets) {
+        setHasFetchedSpreadsheets(true)
+        return cachedSheets
+      }
 
-      const stored = await client.get<{ spreadsheets: GoogleSpreadsheet[] }>('/api/google-sheets/stored', {
-        cancelToken: cancelSource.token,
-      })
+      beginManualLoading()
+      try {
+        if (shouldRefreshRemote) {
+          try {
+            const response = await client.get<GoogleSheetsListResponse>('/api/google-sheets')
+            remoteSheets = Array.isArray(response.data?.spreadsheets) ? response.data.spreadsheets : null
+            if (remoteSheets && remoteSheets.length) {
+              queryClient.setQueryData(SPREADSHEETS_QUERY_KEY, remoteSheets)
+            }
+            await queryClient.invalidateQueries({ queryKey: SPREADSHEETS_QUERY_KEY, exact: true })
+          } catch (err) {
+            remoteRequestFailed = true
+            if (!axios.isCancel(err)) {
+              const message = resolveAxiosError(err, 'Failed to refresh Google Sheets library')
+              setError(message)
+              console.error('Fetch spreadsheets refresh error:', err)
+              toast.error(message)
+            }
+          }
+        }
 
-      setSpreadsheets(stored.data.spreadsheets)
-      setHasFetchedSpreadsheets(true)
-      toast.success('Google Sheets library refreshed')
-      if (stored.data.spreadsheets.length === 0) {
-        toast.message('No spreadsheets saved yet', {
-          description: 'Connect a sheet to start syncing leads.',
+        const sheets = await queryClient.fetchQuery({
+          queryKey: SPREADSHEETS_QUERY_KEY,
+          queryFn: spreadsheetsQueryFn,
+          staleTime: Infinity,
+          gcTime: SPREADSHEETS_GC_TIME,
         })
+
+        const result = remoteSheets && remoteSheets.length ? remoteSheets : sheets
+
+        setHasFetchedSpreadsheets(true)
+
+        if (!remoteRequestFailed) {
+          if (forceRefresh) {
+            toast.success('Google Sheets library refreshed')
+          } else if (shouldRefreshRemote && result.length === 0) {
+            toast.message('No spreadsheets saved yet', {
+              description: 'Connect a sheet to start syncing leads.',
+            })
+          }
+        }
+
+        return result
+      } catch (err) {
+        if (!axios.isCancel(err)) {
+          const message = resolveAxiosError(err, 'Failed to fetch spreadsheets')
+          setError(message)
+          console.error('Fetch spreadsheets error:', err)
+          toast.error(message)
+        }
+        return []
+      } finally {
+        endManualLoading()
       }
-    } catch (err) {
-      if (axios.isCancel(err)) {
-        return
+    },
+    [beginManualLoading, client, endManualLoading, hasFetchedSpreadsheets, queryClient, spreadsheetsQueryFn],
+  )
+
+  useEffect(() => {
+    if (!status?.isConnected || status.isExpired) {
+      if (autoFetchAttempted) {
+        setAutoFetchAttempted(false)
       }
-      const message = err instanceof Error ? err.message : 'Failed to fetch spreadsheets'
-      setError(message)
-      console.error('Fetch spreadsheets error:', err)
-      toast.error(message)
-    } finally {
-      clearCancelToken('spreadsheets', cancelSource)
-      setLoading(false)
+      return
     }
-  }
+    if (hasFetchedSpreadsheets || autoFetchAttempted) {
+      return
+    }
+    setAutoFetchAttempted(true)
+    void fetchSpreadsheets()
+  }, [autoFetchAttempted, fetchSpreadsheets, hasFetchedSpreadsheets, status?.isConnected, status?.isExpired])
 
-  const fetchSheetData = async (spreadsheetId: string, range?: string) => {
-    let cancelSource: CancelTokenSource | null = null
-    try {
-      setLoading(true)
-      setError(null)
+  const fetchSheetData = useCallback(
+    async (spreadsheetId: string, range?: string) => {
+      const queryKey = sheetDataQueryKey(spreadsheetId, range)
+      const cached = queryClient.getQueryData<SpreadsheetData>(queryKey)
+      if (cached) {
+        setSelectedSheet(cached)
+      }
+      const state = queryClient.getQueryState<SpreadsheetData>(queryKey)
+      const dataUpdatedAt = state?.dataUpdatedAt ?? 0
+      const isInvalidated = Boolean(state && (state as { isInvalidated?: boolean }).isInvalidated)
+      const isFresh =
+        Boolean(cached) &&
+        dataUpdatedAt > 0 &&
+        Date.now() - dataUpdatedAt < SHEET_DATA_STALE_TIME &&
+        !isInvalidated
 
-      cancelSource = replaceCancelToken('sheetData')
-      const params = range ? { params: { range } } : undefined
-      const response = await client.get<SpreadsheetData>(`/api/google-sheets/${spreadsheetId}`, {
-        ...(params || {}),
-        cancelToken: cancelSource.token,
-      })
+      if (isFresh && cached) {
+        return cached
+      }
 
-      setSelectedSheet(response.data)
-      const rowCount = Array.isArray(response.data.data) ? response.data.data.length : 0
-      toast.success(`Loaded ${rowCount} rows from Google Sheets`)
-      return response.data
-    } catch (err) {
-      if (axios.isCancel(err)) {
+      beginManualLoading()
+      try {
+        const data = await queryClient.fetchQuery({
+          queryKey,
+          queryFn: sheetDataQueryFn,
+          staleTime: SHEET_DATA_STALE_TIME,
+          gcTime: SHEET_DATA_GC_TIME,
+        })
+        setSelectedSheet(data)
+        const rowCount = Array.isArray(data.data) ? data.data.length : 0
+        toast.success(`Loaded ${rowCount} rows from Google Sheets`)
+        return data
+      } catch (err) {
+        if (!axios.isCancel(err)) {
+          const message = resolveAxiosError(err, 'Failed to fetch sheet data')
+          setError(message)
+          console.error('Fetch sheet data error:', err)
+          toast.error(message)
+        }
         return undefined
+      } finally {
+        endManualLoading()
       }
-      const message = err instanceof Error ? err.message : 'Failed to fetch sheet data'
-      setError(message)
-      console.error('Fetch sheet data error:', err)
-      toast.error(message)
-      return undefined
-    } finally {
-      clearCancelToken('sheetData', cancelSource)
-      setLoading(false)
-    }
-  }
+    },
+    [beginManualLoading, endManualLoading, queryClient, sheetDataQueryFn],
+  )
 
   return {
     status,

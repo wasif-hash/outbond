@@ -4,28 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ChangeEvent } from "react"
 import axios, { CancelTokenSource } from "axios"
 import { useQuery } from "@tanstack/react-query"
-import { Search, Send, Eye, RefreshCw, Download, PencilLine, X, UploadCloud } from "lucide-react"
+import { Search, UploadCloud } from "lucide-react"
 import { toast } from "sonner"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Textarea } from "@/components/ui/textarea"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
-
-import { ErrorAlert } from "@/components/google-sheet/ErrorAlert"
-
 import { useGoogleSheets } from "@/hooks/useGoogleSheet"
 import { useGmail } from "@/hooks/useGmail"
 import {
@@ -36,21 +19,15 @@ import {
   SheetLead,
 } from "@/types/outreach"
 import { SpreadsheetData } from "@/types/google-sheet"
-import { jobStatusVariant, parseSheet, statusVariant } from "@/lib/leads/outreach"
+import { parseSheet } from "@/lib/leads/outreach"
 import { formatEmailBody } from "@/lib/email/format"
-import { cn } from "@/lib/utils"
-import { FastSpinner } from "./components/FastSpinner"
-
-type ChatMessage = {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  status?: "loading" | "error" | "success"
-}
-
-type WizardStep = 1 | 2 | 3
-
-type OutreachSourceType = "google-sheet" | "file-upload"
+import { DraftPreviewPanel } from "./components/draft-preview-panel"
+import { WizardOverlay } from "./components/wizard-overlay"
+import type { StepOneProps, StepTwoProps, StepThreeProps, WizardOverlayProps } from "./components/wizard-overlay"
+import { SentEmailPanel } from "./components/sent-email-panel"
+import { SentCampaignPanel } from "./components/sent-campaign-panel"
+import { OutreachHistory } from "./components/outreach-history"
+import type { ChatMessage, ManualCampaignGroup, OutreachSourceType, PersistedWorkflowState, WizardStep } from "./components/types"
 
 const SOURCE_OPTIONS: Array<{ value: OutreachSourceType; label: string; description: string }> = [
   {
@@ -73,33 +50,7 @@ const htmlToPlainText = (html: string): string =>
     .replace(/\n{3,}/g, "\n\n")
     .trim()
 
-type PersistedWorkflowState = {
-  campaignName: string
-  manualCampaignId: string | null
-  sourceType: OutreachSourceType | null
-  currentStep: WizardStep
-  selectedSheetId: string
-  sheetRange: string
-  leads: SheetLead[]
-  promptInput: string
-  chatMessages: ChatMessage[]
-  drafts: Record<string, DraftRecord>
-  sendingMode: OutreachMode
-  uploadedFileMeta: { name: string; importedAt: number; rowCount: number } | null
-  lastUpdated: number
-}
-
 const LOCAL_STORAGE_KEY = "outbond.dashboard.outreach"
-
-type ManualCampaignGroup = {
-  id: string
-  name: string
-  source: ManualOutreachSource | null
-  sentCount: number
-  totalCount: number
-  lastSentAt: string | null
-  jobs: OutreachedJob[]
-}
 
 const generateManualCampaignId = () => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -166,7 +117,19 @@ export default function Leads() {
     }
   }, [outreachJobsError])
 
-  const outreachedJobs: OutreachedJob[] = outreachedJobsData ?? []
+  const outreachedJobs = useMemo<OutreachedJob[]>(() => outreachedJobsData ?? [], [outreachedJobsData])
+
+  const {
+    spreadsheets,
+    selectedSheet,
+    hasFetchedSpreadsheets,
+    loading: sheetsLoading,
+    error: sheetsError,
+    setError: setSheetsError,
+    checkConnectionStatus,
+    fetchSpreadsheets,
+    fetchSheetData,
+  } = useGoogleSheets()
   const jobsLoading = jobsInitialLoading || jobsFetching
 
   const createCancelSource = useCallback((holder: { current: CancelTokenSource | null }, reason = 'Cancelled due to a new request') => {
@@ -217,7 +180,6 @@ export default function Leads() {
     } finally {
       setResumeReady(true)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -371,7 +333,7 @@ export default function Leads() {
         setSheetRange("")
       }
     },
-    [],
+    [setSheetsError],
   )
 
   const setStep = useCallback((next: WizardStep) => {
@@ -423,22 +385,10 @@ export default function Leads() {
     }
   }, [])
 
-  const {
-    spreadsheets,
-    selectedSheet,
-    hasFetchedSpreadsheets,
-    loading: sheetsLoading,
-    error: sheetsError,
-    setError: setSheetsError,
-    checkConnectionStatus,
-    fetchSpreadsheets,
-    fetchSheetData,
-  } = useGoogleSheets()
-
   const { status: gmailStatus } = useGmail()
 
   useEffect(() => {
-    checkConnectionStatus().catch(() => undefined)
+    void checkConnectionStatus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -591,11 +541,17 @@ export default function Leads() {
   const outreachDraft = previewEmail ? drafts[previewEmail] : null
   const previewLead = useMemo(() => leads.find((lead) => lead.email === previewEmail), [previewEmail, leads])
 
-  const handleSheetSelectOpen = useCallback((open: boolean) => {
-    if (open && !hasFetchedSpreadsheets && !sheetsLoading) {
-      fetchSpreadsheets().catch(() => undefined)
-    }
-  }, [fetchSpreadsheets, hasFetchedSpreadsheets, sheetsLoading])
+  const handleSheetSelectOpen = useCallback(
+    (open: boolean) => {
+      if (!open || sheetsLoading) {
+        return
+      }
+      if (!hasFetchedSpreadsheets || spreadsheets.length === 0) {
+        void fetchSpreadsheets({ force: !hasFetchedSpreadsheets })
+      }
+    },
+    [fetchSpreadsheets, hasFetchedSpreadsheets, sheetsLoading, spreadsheets.length],
+  )
 
   const handleExportOutreachedCsv = useCallback(
     (jobsToExport?: OutreachedJob[], options?: { fileLabel?: string }) => {
@@ -959,10 +915,19 @@ export default function Leads() {
     toast.success('Draft updated')
   }
 
-  const outreachUnavailable = !gmailStatus?.isConnected
+  const outreachUnavailable = gmailStatus ? !gmailStatus.isConnected : false
   const step1Complete = hasLeads
   const step2Complete = hasDrafts
 
+  const handleCloseDraftPreview = useCallback(() => {
+    setPreviewEmail(null)
+    setPreviewEditing(false)
+  }, [])
+
+  const handleCloseWizard = useCallback(() => {
+    setSourceError(null)
+    setWizardOpen(false)
+  }, [])
   useEffect(() => {
     if (!resumeReady) return
     if (!step1Complete && currentStep > 1) {
@@ -971,6 +936,91 @@ export default function Leads() {
       setCurrentStep(2)
     }
   }, [currentStep, resumeReady, step1Complete, step2Complete])
+
+  const wizardStepOne: StepOneProps = {
+    campaignName,
+    onCampaignNameChange: setCampaignName,
+    sourceOptions: SOURCE_OPTIONS,
+    sourceType,
+    onSourceTypeChange: handleSourceTypeChange,
+    spreadsheets,
+    selectedSheetId,
+    onSelectedSheetIdChange: setSelectedSheetId,
+    sheetRange,
+    onSheetRangeChange: setSheetRange,
+    onSheetSelectOpen: handleSheetSelectOpen,
+    onLoadSheet: handleLoadSheet,
+    onRefreshSheets: () => {
+      void fetchSpreadsheets({ force: true })
+    },
+    sheetsLoading,
+    sheetsError,
+    onClearSheetsError: () => setSheetsError(null),
+    hasLeads,
+    leadsCount: leads.length,
+    importingLeads,
+    fileInputRef,
+    onFileInputChange: handleFileInputChange,
+    uploadedFileMeta,
+    canProceed: Boolean(campaignName.trim() && sourceType && leads.length > 0),
+    onNext: handleStep1Continue,
+    onCancel: handleCloseWizard,
+  }
+
+  const wizardStepTwo: StepTwoProps = {
+    chatMessages,
+    promptInput,
+    onPromptInputChange: setPromptInput,
+    onPromptSubmit: () => {
+      if (!isGeneratingFromPrompt) {
+        void handlePromptSubmit()
+      }
+    },
+    isGeneratingFromPrompt,
+    hasDrafts,
+    onPrevious: () => {
+      setSourceError(null)
+      setStep(1)
+    },
+    onNext: handleStep2Continue,
+  }
+
+  const wizardStepThree: StepThreeProps = {
+    filteredLeads,
+    leads,
+    drafts,
+    sendingMode,
+    onSendingModeChange: setSendingMode,
+    sendSingleEmail,
+    sendingLeadEmail,
+    sendingEmails,
+    outreachUnavailable,
+    hasDrafts,
+    pendingDraftCount,
+    onBulkSendClick: handleBulkSendClick,
+    bulkDialogOpen,
+    onBulkDialogChange: setBulkDialogOpen,
+    confirmBulkSend,
+    onPreviewDraft: setPreviewEmail,
+    isGeneratingFromPrompt,
+    onBack: () => {
+      setSourceError(null)
+      setStep(2)
+    },
+    onClose: handleCloseWizard,
+  }
+
+  const wizardOverlayProps: WizardOverlayProps = {
+    open: wizardOpen,
+    onClose: handleCloseWizard,
+    currentStep,
+    sourceError,
+    onClearSourceError: () => setSourceError(null),
+    stepOne: wizardStepOne,
+    stepTwo: wizardStepTwo,
+    stepThree: wizardStepThree,
+  }
+
 
   return (
     <div className="p-6 space-y-6">
@@ -1002,726 +1052,54 @@ export default function Leads() {
               Outreach leads
             </Button>
           </div>
-      </CardContent>
-    </Card>
-
-      <Dialog open={wizardOpen} onOpenChange={setWizardOpen}>
-        <DialogContent className="max-w-5xl">
-          <DialogHeader>
-            <DialogTitle>{campaignName ? campaignName : "Launch outreach campaign"}</DialogTitle>
-            <DialogDescription>
-              Step {currentStep} of 3
-              {sourceType ? ` · ${sourceType === "google-sheet" ? "Google Sheet" : "File upload"}` : ""}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-6">
-            {currentStep === 1 ? (
-              <div className="space-y-6">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-muted-foreground" htmlFor="outreach-campaign-name">
-                    Campaign name
-                  </label>
-                  <Input
-                    id="outreach-campaign-name"
-                    value={campaignName}
-                    onChange={(event) => setCampaignName(event.target.value)}
-                    placeholder="Ex: HR Directors – Feb 2025"
-                  />
-                </div>
-
-                <div className="space-y-3">
-                  <p className="text-sm font-medium text-muted-foreground">Lead source</p>
-                  <div className="space-y-2">
-                    {SOURCE_OPTIONS.map((option) => {
-                      const isActive = sourceType === option.value
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => handleSourceTypeChange(option.value)}
-                          className={cn(
-                            "w-full rounded-lg border p-4 text-left transition",
-                            isActive
-                              ? "border-primary bg-primary/5"
-                              : "border-border hover:border-primary/40 hover:bg-muted/50",
-                          )}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-medium text-foreground">{option.label}</span>
-                            {isActive ? <Badge variant="positive">Selected</Badge> : null}
-                          </div>
-                          <p className="mt-1 text-sm text-muted-foreground">{option.description}</p>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-
-                {sourceType === "google-sheet" ? (
-                  <div className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-3">
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground">Google Sheet</label>
-                        <Select
-                          value={selectedSheetId}
-                          onValueChange={(value) => {
-                            setSelectedSheetId(value)
-                            setSheetRange("")
-                          }}
-                          onOpenChange={handleSheetSelectOpen}
-                          disabled={spreadsheets.length === 0 && sheetsLoading}
-                        >
-                          <SelectTrigger className="w-full justify-between">
-                            <SelectValue
-                              placeholder={
-                                spreadsheets.length
-                                  ? "Select sheet"
-                                  : sheetsLoading
-                                    ? "Loading sheets…"
-                                    : "No sheets saved"
-                              }
-                            />
-                            {sheetsLoading ? <FastSpinner size="sm" /> : null}
-                          </SelectTrigger>
-                          <SelectContent>
-                            {spreadsheets.map((sheet) => (
-                              <SelectItem key={sheet.id} value={sheet.id}>
-                                {sheet.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground">Range</label>
-                        <Input
-                          value={sheetRange}
-                          onChange={(event) => setSheetRange(event.target.value)}
-                          placeholder="Sheet1!A:P"
-                        />
-                        <p className="text-xs text-muted-foreground">Use `Tab!A:Z` to limit rows.</p>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted-foreground">Actions</label>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button type="button" onClick={handleLoadSheet} disabled={sheetsLoading || !selectedSheetId}>
-                            {sheetsLoading ? <FastSpinner size="sm" className="mr-2" /> : null}
-                            Load data
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => fetchSpreadsheets().catch(() => undefined)}
-                            disabled={sheetsLoading}
-                          >
-                            Refresh library
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                    {sheetsError ? <ErrorAlert error={sheetsError} onClose={() => setSheetsError(null)} /> : null}
-                    {hasLeads ? (
-                      <div className="rounded-md border border-dashed border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
-                        Loaded {leads.length} leads from the selected sheet.
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {sourceType === "file-upload" ? (
-                  <div className="space-y-4">
-                    <label
-                      htmlFor="manual-outreach-upload"
-                      className={cn(
-                        "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-background p-8 text-center transition hover:border-primary/40 hover:bg-muted/40",
-                        importingLeads ? "border-primary bg-primary/5" : "",
-                      )}
-                    >
-                      {importingLeads ? <FastSpinner size="lg" /> : <UploadCloud className="h-8 w-8 text-muted-foreground" />}
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium text-foreground">Upload a CSV or Excel file</p>
-                        <p className="text-xs text-muted-foreground">
-                          We’ll detect emails, first names, last names, job titles, and companies automatically.
-                        </p>
-                      </div>
-                      <span className="text-xs font-medium text-primary">Click to browse files</span>
-                    </label>
-                    <input
-                      ref={fileInputRef}
-                      id="manual-outreach-upload"
-                      type="file"
-                      accept=".csv,.xlsx,.xls"
-                      className="hidden"
-                      onChange={handleFileInputChange}
-                    />
-                    {uploadedFileMeta ? (
-                      <div className="rounded-md border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
-                        Loaded {uploadedFileMeta.rowCount} leads from {uploadedFileMeta.name} ·{" "}
-                        {new Date(uploadedFileMeta.importedAt).toLocaleString()}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {sourceError ? <p className="text-sm text-destructive">{sourceError}</p> : null}
-
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Button type="button" variant="outline" onClick={() => setWizardOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={handleStep1Continue}
-                    disabled={!campaignName.trim() || !sourceType || leads.length === 0}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {currentStep === 2 ? (
-              <div className="space-y-6">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="font-mono uppercase">
-                    Step 2
-                  </Badge>
-                  <h3 className="text-base font-semibold text-foreground">Describe the outreach email</h3>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Share the angle, tone, and CTA you’d like. The AI follows your prompt when drafting emails for every lead.
-                </p>
-                <div className="rounded-lg border border-border bg-background p-4">
-                  {chatMessages.length === 0 ? (
-                    <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-                      Your conversation with the AI will appear here once you send a prompt.
-                    </div>
-                  ) : (
-                    <div className="flex max-h-72 flex-col gap-4 overflow-y-auto">
-                      {chatMessages.map((message) => {
-                        const isUser = message.role === "user"
-                        const isError = message.status === "error"
-                        const bubbleClass = cn(
-                          "max-w-[75%] rounded-lg px-4 py-3 text-sm shadow-sm",
-                          isUser ? "text-black" : "bg-muted/60 text-foreground",
-                          isError ? "bg-red-100 text-red-900" : "",
-                        )
-
-                        return (
-                          <div key={message.id} className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-                            <div
-                              className={bubbleClass}
-                              style={isUser && !isError ? { backgroundColor: "hsl(var(--cwt-plum))" } : undefined}
-                            >
-                              {message.status === "loading" ? (
-                                <div className="flex items-center gap-2">
-                                  <FastSpinner size="sm" />
-                                  <span>{message.content}</span>
-                                </div>
-                              ) : (
-                                <span>{message.content}</span>
-                              )}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-                <form
-                  className="space-y-3"
-                  onSubmit={(event) => {
-                    event.preventDefault()
-                    if (!isGeneratingFromPrompt) {
-                      void handlePromptSubmit()
-                    }
-                  }}
-                >
-                  <Textarea
-                    value={promptInput}
-                    onChange={(event) => setPromptInput(event.target.value)}
-                    placeholder="Example: Reference their Series B, mention how we halve onboarding time, and close with a discovery call offer."
-                    rows={4}
-                  />
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      Mention tone, proof points, objections to overcome, and the closing CTA you expect.
-                    </p>
-                    <Button type="submit" disabled={isGeneratingFromPrompt}>
-                      {isGeneratingFromPrompt ? (
-                        <>
-                          <FastSpinner size="sm" className="mr-2" />
-                          Generating drafts…
-                        </>
-                      ) : (
-                        "Generate drafts"
-                      )}
-                    </Button>
-                  </div>
-                </form>
-                {sourceError ? <p className="text-sm text-destructive">{sourceError}</p> : null}
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Button type="button" variant="outline" onClick={() => setStep(1)}>
-                    Previous
-                  </Button>
-                  <Button type="button" onClick={handleStep2Continue} disabled={!hasDrafts}>
-                    Next
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-
-            {currentStep === 3 ? (
-              <div className="space-y-6">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="font-mono uppercase">
-                    Step 3
-                  </Badge>
-                  <h3 className="text-base font-semibold text-foreground">Review & send</h3>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Preview every message before delivery. Switch between single send or a bulk blast when you’re ready.
-                </p>
-                {sourceError ? (
-                  <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-                    {sourceError}
-                  </div>
-                ) : null}
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  {hasDrafts ? (
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-muted/40 text-left">
-                          <th className="px-4 py-2 font-mono font-semibold">Lead</th>
-                          <th className="px-4 py-2 font-mono font-semibold">Company</th>
-                          <th className="px-4 py-2 font-mono font-semibold">Email</th>
-                          <th className="px-4 py-2 font-mono font-semibold">Status</th>
-                          <th className="px-4 py-2 font-mono font-semibold">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredLeads.length === 0 ? (
-                          <tr>
-                            <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                              {leads.length === 0 ? "Load leads to display results." : "No leads match your search."}
-                            </td>
-                          </tr>
-                        ) : (
-                          filteredLeads.map((lead) => {
-                            const draft = drafts[lead.email]
-                            const isSendingThisLead = sendingLeadEmail === lead.email
-                            const isAnotherLeadSending = sendingLeadEmail !== null && !isSendingThisLead
-                            return (
-                              <tr key={lead.rowIndex} className="border-t border-border">
-                                <td className="px-4 py-2">
-                                  <div className="font-medium">
-                                    {lead.firstName || lead.lastName
-                                      ? `${lead.firstName ?? ""} ${lead.lastName ?? ""}`.trim()
-                                      : lead.email}
-                                  </div>
-                                  {lead.summary && (
-                                    <div className="text-xs text-muted-foreground line-clamp-1">{lead.summary}</div>
-                                  )}
-                                </td>
-                                <td className="px-4 py-2 text-muted-foreground">{lead.company || "—"}</td>
-                                <td className="px-4 py-2 font-mono text-xs">{lead.email}</td>
-                                <td className="px-4 py-2">
-                                  <Badge variant={draft ? statusVariant(draft.status) : "outline"}>
-                                    {draft ? draft.status.toUpperCase() : "WAITING"}
-                                  </Badge>
-                                </td>
-                                <td className="px-4 py-2">
-                                  <div className="flex items-center gap-2">
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      disabled={!draft}
-                                      onClick={() => setPreviewEmail(lead.email)}
-                                    >
-                                      <Eye className="mr-2 h-4 w-4" />
-                                      View
-                                    </Button>
-                                    {sendingMode === "single" && (
-                                      <Button
-                                        size="sm"
-                                        onClick={() => sendSingleEmail(lead.email)}
-                                        disabled={
-                                          !draft ||
-                                          draft.status === "queued" ||
-                                          draft.status === "sent" ||
-                                          outreachUnavailable ||
-                                          isSendingThisLead ||
-                                          isAnotherLeadSending
-                                        }
-                                      >
-                                        {isSendingThisLead ? (
-                                          <FastSpinner size="sm" className="mr-2" />
-                                        ) : (
-                                          <Send className="mr-2 h-4 w-4" />
-                                        )}
-                                        Send
-                                      </Button>
-                                    )}
-                                  </div>
-                                </td>
-                              </tr>
-                            )
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="flex h-40 items-center justify-center gap-2 text-sm text-muted-foreground">
-                      <FastSpinner />
-                      {isGeneratingFromPrompt ? "Generating drafts…" : "Generate drafts to preview outreach emails."}
-                    </div>
-                  )}
-                </div>
-
-                {hasDrafts ? (
-                  <div className="space-y-3">
-                    <div>
-                      <p className="text-sm font-medium text-foreground">How would you like to send these emails?</p>
-                      <p className="text-xs text-muted-foreground">Switch between single send or bulk delivery.</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        type="button"
-                        variant={sendingMode === "single" ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setSendingMode("single")}
-                      >
-                        Single send
-                      </Button>
-                      <Button
-                        type="button"
-                        variant={sendingMode === "bulk" ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setSendingMode("bulk")}
-                      >
-                        Bulk send
-                      </Button>
-                    </div>
-
-                    {sendingMode === "bulk" ? (
-                      <>
-                        <Button
-                          type="button"
-                          onClick={handleBulkSendClick}
-                          disabled={sendingEmails || outreachUnavailable || !pendingDraftCount}
-                          className="flex w-full justify-center sm:w-auto"
-                        >
-                          {sendingEmails ? <FastSpinner size="sm" className="mr-2" /> : <Send className="mr-2 h-4 w-4" />}
-                          Send {pendingDraftCount} emails
-                        </Button>
-
-                        <AlertDialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Send {pendingDraftCount} emails in bulk?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                Make sure you’ve reviewed each draft — AI can make mistakes. All emails will be queued immediately.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel disabled={sendingEmails}>Cancel</AlertDialogCancel>
-                              <AlertDialogAction onClick={confirmBulkSend} disabled={sendingEmails}>
-                                {sendingEmails ? <FastSpinner size="sm" className="mr-2" /> : null}
-                                Send all
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      </>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        Use the send button inside the table once you’ve reviewed the draft.
-                      </p>
-                    )}
-                  </div>
-                ) : null}
-
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Button type="button" variant="outline" onClick={() => setStep(2)}>
-                    Previous
-                  </Button>
-                  <Button type="button" variant="ghost" onClick={() => setWizardOpen(false)}>
-                    Close
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-
-      <Card>
-        <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <CardTitle className="text-lg font-mono">Outreach history</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Review sent campaigns and legacy emails queued from this dashboard.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => refetchOutreachJobs().catch(() => undefined)}
-              disabled={jobsLoading}
-            >
-              {jobsLoading ? <FastSpinner size="sm" className="mr-2" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-              {jobsLoading ? "Refreshing…" : "Refresh"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => handleExportOutreachedCsv(undefined, { fileLabel: "outreached-emails" })}
-              disabled={!outreachedJobs.length || jobsLoading}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              Export all
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <section className="space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">Completed outreach campaigns</h3>
-                <p className="text-xs text-muted-foreground">
-                  Click any campaign to review the leads that were emailed. Campaign summaries include only outreach launched from this page.
-                </p>
-              </div>
-              <Badge variant="outline" className="font-mono uppercase">
-                {manualCampaigns.length} total
-              </Badge>
-            </div>
-            {jobsLoading ? (
-              <div className="flex h-40 items-center justify-center gap-2 text-sm text-muted-foreground">
-                <FastSpinner />
-                Loading outreach history…
-              </div>
-            ) : filteredCampaigns.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
-                {manualCampaigns.length === 0
-                  ? "No outreach campaigns have been sent yet. Complete Step 3 above to start building your history."
-                  : "No campaigns match your search."}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {filteredCampaigns.map((campaign) => (
-                  <div
-                    key={campaign.id}
-                    className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-foreground">{campaign.name}</span>
-                        <Badge variant="outline" className="font-mono text-xs uppercase">
-                          {campaign.sentCount}/{campaign.totalCount} sent
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {campaign.source === "google-sheet" ? "Google Sheet" : "File upload"} • {campaign.lastSentAt ? new Date(campaign.lastSentAt).toLocaleString() : "Not sent yet"}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setSelectedCampaign(campaign)}>
-                        <Eye className="mr-2 h-4 w-4" />
-                        View leads
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() =>
-                          handleExportOutreachedCsv(campaign.jobs, {
-                            fileLabel: campaign.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-                          })
-                        }
-                      >
-                        <Download className="mr-2 h-4 w-4" />
-                        Export CSV
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground">Legacy emails</h3>
-                <p className="text-xs text-muted-foreground">
-                  Emails without a campaign tag appear here. You can still review and export them.
-                </p>
-              </div>
-              <Badge variant="outline" className="font-mono uppercase">
-                {filteredLegacyJobs.length}
-              </Badge>
-            </div>
-            <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-muted/40 text-left">
-                    <th className="px-4 py-2 font-mono font-semibold">Recipient</th>
-                    <th className="px-4 py-2 font-mono font-semibold">Subject</th>
-                    <th className="px-4 py-2 font-mono font-semibold">Status</th>
-                    <th className="px-4 py-2 font-mono font-semibold">Sent</th>
-                    <th className="px-4 py-2 font-mono font-semibold">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jobsLoading ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                        Loading outreached emails…
-                      </td>
-                    </tr>
-                  ) : filteredLegacyJobs.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                        {legacyJobs.length === 0 ? "No emails have been sent yet." : "No legacy emails match your search."}
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredLegacyJobs.map((job: OutreachedJob) => (
-                      <tr key={job.id} className="border-t border-border">
-                        <td className="px-4 py-2">
-                          <div className="font-medium">
-                            {job.leadFirstName || job.leadLastName
-                              ? `${job.leadFirstName ?? ""} ${job.leadLastName ?? ""}`.trim()
-                              : job.leadEmail}
-                          </div>
-                          <div className="text-xs text-muted-foreground">{job.leadEmail}</div>
-                        </td>
-                        <td className="px-4 py-2 text-muted-foreground line-clamp-1">{job.subject}</td>
-                        <td className="px-4 py-2">
-                          <Badge variant={jobStatusVariant(job.status)}>
-                            {job.status === "SENT" ? "COMPLETED" : job.status}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-2 text-xs whitespace-nowrap text-muted-foreground">
-                          {job.sentAt ? new Date(job.sentAt).toLocaleString() : "—"}
-                        </td>
-                        <td className="px-4 py-2">
-                          <Button size="sm" variant="outline" onClick={() => setPreviewJob(job)}>
-                            <Eye className="mr-2 h-4 w-4" /> View
-                          </Button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
         </CardContent>
       </Card>
 
-      <Dialog open={Boolean(previewJob)} onOpenChange={(open) => !open && setPreviewJob(null)}>
-        <DialogContent className="w-full max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Sent email</DialogTitle>
-          </DialogHeader>
-          {previewJob && (
-            <div className="space-y-4">
-              <div className="text-sm text-muted-foreground">
-                Sent to <span className="font-medium text-foreground">{previewJob.leadEmail}</span>
-              </div>
-              <div className="space-y-2">
-                <div className="font-mono text-sm font-semibold">Subject</div>
-                <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">{previewJob.subject}</div>
-              </div>
-              <div className="space-y-2">
-                <div className="font-mono text-sm font-semibold">Body</div>
-                <div className="rounded-md border border-border bg-muted/40 p-3 text-sm whitespace-pre-wrap">
-                  {previewJob.bodyText ? previewJob.bodyText : htmlToPlainText(previewJob.bodyHtml)}
-                </div>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <WizardOverlay {...wizardOverlayProps} />
 
-      <Dialog open={Boolean(selectedCampaign)} onOpenChange={(open) => !open && setSelectedCampaign(null)}>
-        <DialogContent className="w-full max-w-4xl overflow-hidden p-0">
-          <DialogHeader className="space-y-2 px-6 pt-6">
-            <DialogTitle>{selectedCampaign?.name ?? "Outreach campaign"}</DialogTitle>
-            <DialogDescription>
-              {selectedCampaign
-                ? `${selectedCampaign.sentCount}/${selectedCampaign.totalCount} emails sent · ${selectedCampaign.source === "google-sheet" ? "Google Sheet" : "File upload"}`
-                : null}
-            </DialogDescription>
-          </DialogHeader>
-          {selectedCampaign && (
-            <div className="space-y-4 px-6 pb-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs text-muted-foreground">
-                  Last activity {selectedCampaign.lastSentAt ? new Date(selectedCampaign.lastSentAt).toLocaleString() : "Not sent yet"}
-                </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    handleExportOutreachedCsv(selectedCampaign.jobs, {
-                      fileLabel: selectedCampaign.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-                    })
-                  }
-                >
-                  <Download className="mr-2 h-4 w-4" />
-                  Export CSV
-                </Button>
-              </div>
-              <div className="overflow-x-auto rounded-lg border border-border">
-                <table className="min-w-[720px] w-full text-sm">
-                  <thead>
-                    <tr className="bg-muted/40 text-left">
-                      <th className="px-4 py-2 font-mono font-semibold">Recipient</th>
-                      <th className="px-4 py-2 font-mono font-semibold">Subject</th>
-                      <th className="px-4 py-2 font-mono font-semibold">Status</th>
-                      <th className="px-4 py-2 font-mono font-semibold">Sent</th>
-                      <th className="px-4 py-2 font-mono font-semibold">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedCampaign.jobs.map((job: OutreachedJob) => (
-                      <tr key={job.id} className="border-t border-border">
-                        <td className="px-4 py-2">
-                          <div className="font-medium">
-                            {job.leadFirstName || job.leadLastName
-                              ? `${job.leadFirstName ?? ""} ${job.leadLastName ?? ""}`.trim()
-                              : job.leadEmail}
-                          </div>
-                          <div className="text-xs text-muted-foreground">{job.leadEmail}</div>
-                        </td>
-                        <td className="px-4 py-2 text-muted-foreground line-clamp-1">{job.subject}</td>
-                        <td className="px-4 py-2">
-                          <Badge variant={jobStatusVariant(job.status)}>
-                            {job.status === "SENT" ? "COMPLETED" : job.status}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-2 text-xs whitespace-nowrap text-muted-foreground">
-                          {job.sentAt ? new Date(job.sentAt).toLocaleString() : "—"}
-                        </td>
-                        <td className="px-4 py-2">
-                          <Button size="sm" variant="outline" onClick={() => setPreviewJob(job)}>
-                            <Eye className="mr-2 h-4 w-4" /> View
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <DraftPreviewPanel
+        open={Boolean(previewEmail && outreachDraft)}
+        lead={previewLead}
+        draft={outreachDraft}
+        editing={previewEditing}
+        editedSubject={editedSubject}
+        editedBody={editedBody}
+        onEdit={startEditingPreview}
+        onCancelEdit={cancelEditingPreview}
+        onSave={saveEditedPreview}
+        onClose={handleCloseDraftPreview}
+        onChangeSubject={(value) => setEditedSubject(value)}
+        onChangeBody={(value) => setEditedBody(value)}
+        plainBodyRenderer={(draft) => htmlToPlainText(draft.bodyHtml ?? "")}
+      />
+
+      <OutreachHistory
+        jobsLoading={jobsLoading}
+        manualCampaigns={manualCampaigns}
+        filteredCampaigns={filteredCampaigns}
+        legacyJobs={legacyJobs}
+        filteredLegacyJobs={filteredLegacyJobs}
+        onRefresh={() => refetchOutreachJobs().catch(() => undefined)}
+        onExportAll={() => handleExportOutreachedCsv(undefined, { fileLabel: "outreached-emails" })}
+        onExportCampaign={handleExportOutreachedCsv}
+        onSelectCampaign={setSelectedCampaign}
+        onPreviewLegacyJob={setPreviewJob}
+      />
+
+      <SentEmailPanel
+        open={Boolean(previewJob)}
+        job={previewJob}
+        onClose={() => setPreviewJob(null)}
+        plainBodyRenderer={htmlToPlainText}
+      />
+
+      <SentCampaignPanel
+        open={Boolean(selectedCampaign)}
+        campaign={selectedCampaign}
+        onClose={() => setSelectedCampaign(null)}
+        onExport={handleExportOutreachedCsv}
+        onPreviewJob={(job) => setPreviewJob(job)}
+      />
 
     </div>
   )

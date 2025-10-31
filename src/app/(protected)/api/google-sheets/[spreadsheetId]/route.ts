@@ -10,6 +10,18 @@ import {
 } from '@/lib/google-sheet/google-sheet'
 import { SpreadsheetData } from '@/types/google-sheet'
 
+export const runtime = 'nodejs'
+
+const getApiStatus = (error: unknown): number | undefined => {
+  if (!error || typeof error !== 'object') {
+    return undefined
+  }
+  const maybeError = error as { code?: unknown; response?: { status?: unknown } }
+  const directStatus = typeof maybeError.code === 'number' ? maybeError.code : undefined
+  const nestedStatus = typeof maybeError.response?.status === 'number' ? maybeError.response.status : undefined
+  return directStatus ?? nestedStatus
+}
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ spreadsheetId: string }> },
@@ -41,11 +53,11 @@ export async function GET(
       await refreshTokenIfNeeded(oauth2Client, tokenRecord, authResult.user.userId)
     }
 
-    let spreadsheetInfo
+    let spreadsheetInfo: Awaited<ReturnType<typeof getSpreadsheetInfo>>
     try {
       spreadsheetInfo = await getSpreadsheetInfo(oauth2Client, spreadsheetId)
-    } catch (apiError: any) {
-      const status = apiError?.code || apiError?.response?.status
+    } catch (apiError: unknown) {
+      const status = getApiStatus(apiError)
       if (status === 404) {
         return NextResponse.json(
           { error: 'Spreadsheet not found or you do not have access. Verify the Sheet ID and sharing permissions.' },
@@ -64,8 +76,8 @@ export async function GET(
     let data: string[][]
     try {
       data = await getSpreadsheetData(oauth2Client, spreadsheetId, effectiveRange)
-    } catch (apiError: any) {
-      const status = apiError?.code || apiError?.response?.status
+    } catch (apiError: unknown) {
+      const status = getApiStatus(apiError)
       if (status === 404) {
         return NextResponse.json(
           { error: 'Sheet tab or range not found. Confirm the tab name exists and the range is valid (e.g. "Leads!A:P").' },

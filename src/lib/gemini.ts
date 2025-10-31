@@ -449,7 +449,7 @@ function normaliseJsonBlock(raw: string): string | null {
   const firstBrace = trimmed.indexOf('{')
   const lastBrace = trimmed.lastIndexOf('}')
   if (firstBrace >= 0 && lastBrace > firstBrace) {
-  return trimmed.slice(firstBrace, lastBrace + 1)
+    return trimmed.slice(firstBrace, lastBrace + 1)
   }
 
   return trimmed
@@ -461,7 +461,7 @@ function enhanceEmailBody(raw: string | null | undefined, context: Pick<Outreach
     'Would love 15 minutes later this week to share more if it resonates.'
   const senderName = context.senderName?.trim() || 'Our team'
 
-  let working = stripHtml(raw ?? '')
+  const working = stripHtml(raw ?? '')
   if (!working) {
     return `${defaultCTA}\n\nBest,\n${senderName}`
   }

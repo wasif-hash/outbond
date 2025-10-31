@@ -1,15 +1,16 @@
 // src/lib/worker.ts
 import { Worker, Job } from 'bullmq'
-import type { Lead, Prisma } from '@prisma/client'
+import type { Lead, Prisma, JobStatus } from '@prisma/client'
 import { redis, LeadFetchJobData } from './queue'
 import { prisma } from './prisma'
 import { apollo, ApolloError, ApolloSearchFilters, ApolloLead, ApolloSearchResponse } from './apollo/apollo'
 import { generateSmartLeadSummary } from './gemini'
 import { generateLeadSummary, SheetLeadRow, sanitizeEmailForSheet, chunkArray } from './utils'
-import { 
-  createUserRateLimit, 
-  createCampaignRateLimit, 
-  RedisLock 
+import {
+  createUserRateLimit,
+  createCampaignRateLimit,
+  RedisLock,
+  TokenBucketRateLimit,
 } from './rate-limit'
 
 import { createAuthorizedClient } from './google-sheet/google-sheet'
@@ -30,6 +31,14 @@ type PreparedLead = {
   sheetRow: SheetLeadRow
 }
 
+const asNonEmptyString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
 export class LeadFetchWorker {
   private worker: Worker
 
@@ -39,12 +48,12 @@ export class LeadFetchWorker {
       concurrency: 2, // Reduced concurrency for rate limiting
     })
 
-    this.worker.on('completed', (job: any) => {
-      console.log(`✅ Job ${job.id} completed successfully`)
+    this.worker.on('completed', (job: Job<LeadFetchJobData>) => {
+      console.log(`✅ Job ${job.id ?? 'unknown'} completed successfully`)
     })
 
-    this.worker.on('failed', (job: any, err: any) => {
-      console.error(`❌ Job ${job?.id} failed:`, err.message)
+    this.worker.on('failed', (job: Job<LeadFetchJobData> | null, err: Error) => {
+      console.error(`❌ Job ${job?.id ?? 'unknown'} failed:`, err.message)
     })
   }
 
@@ -53,10 +62,6 @@ export class LeadFetchWorker {
     
     console.log(`🚀 Starting lead fetch job ${jobId} for campaign ${campaignId}${isRetry ? ' (RETRY)' : ''}`)
 
-    // Set up rate limiters
-    const userRateLimit = createUserRateLimit(userId)
-    const campaignRateLimit = createCampaignRateLimit(campaignId)
-    
     // Test connection to Apollo API
     try {
       const connected = await apollo.checkConnection()
@@ -427,7 +432,7 @@ export class LeadFetchWorker {
     }
   }
 
-  private async checkRateLimits(rateLimiters: any[]): Promise<void> {
+  private async checkRateLimits(rateLimiters: TokenBucketRateLimit[]): Promise<void> {
     for (const limiter of rateLimiters) {
       const result = await limiter.checkAndConsume(1)
       if (!result.allowed) {
@@ -490,83 +495,150 @@ export class LeadFetchWorker {
         leadMap.set(lead.id, lead)
       })
 
-      response.matches?.forEach(match => {
-        const identifier = match?.client_identifier || match?.id
-        if (!identifier) return
+      const matches = Array.isArray(response.matches) ? response.matches : []
+
+      matches.forEach(rawMatch => {
+        if (!rawMatch || typeof rawMatch !== 'object') {
+          return
+        }
+
+        const match = rawMatch as Record<string, unknown>
+        const identifier =
+          asNonEmptyString(match.client_identifier) ?? asNonEmptyString(match.id)
+        if (!identifier) {
+          return
+        }
 
         const lead = leadMap.get(identifier)
         if (!lead) {
           return
         }
 
-        const person = match
-        const candidateEmails: string[] = []
-        if (typeof person.email === 'string') candidateEmails.push(person.email)
-        if (Array.isArray(person.emails)) {
-          person.emails.forEach((entry: any) => {
-            const val = entry?.value || entry?.email
-            if (val) candidateEmails.push(String(val))
-          })
-        }
-        if (Array.isArray(person.emails_raw)) {
-          person.emails_raw.forEach((entry: any) => {
-            if (typeof entry === 'string') candidateEmails.push(entry)
-          })
+        const emailCandidates = new Set<string>()
+        const baseEmail = asNonEmptyString(match.email)
+        if (baseEmail) {
+          emailCandidates.add(baseEmail)
         }
 
-        const unlockedEmail = candidateEmails.find(email => email && !email.includes('not_unlocked'))
+        const nestedEmails = Array.isArray(match.emails) ? match.emails : []
+        nestedEmails.forEach(entry => {
+          if (typeof entry === 'string') {
+            const candidate = asNonEmptyString(entry)
+            if (candidate) {
+              emailCandidates.add(candidate)
+            }
+            return
+          }
+
+          if (!entry || typeof entry !== 'object') {
+            return
+          }
+
+          const entryRecord = entry as Record<string, unknown>
+          const fromValue = asNonEmptyString(entryRecord.value)
+          if (fromValue) {
+            emailCandidates.add(fromValue)
+          }
+          const fromEmail = asNonEmptyString(entryRecord.email)
+          if (fromEmail) {
+            emailCandidates.add(fromEmail)
+          }
+        })
+
+        const rawEmails = Array.isArray(match.emails_raw) ? match.emails_raw : []
+        rawEmails.forEach(entry => {
+          const candidate = asNonEmptyString(entry)
+          if (candidate) {
+            emailCandidates.add(candidate)
+          }
+        })
+
+        const unlockedEmail = [...emailCandidates].find(
+          candidate => !candidate.includes('not_unlocked'),
+        )
         if (unlockedEmail) {
           lead.email = unlockedEmail.toLowerCase().trim()
         }
 
-        const candidatePhones: string[] = []
-        if (typeof person.phone_number === 'string') candidatePhones.push(person.phone_number)
-        if (typeof person.mobile_number === 'string') candidatePhones.push(person.mobile_number)
-        if (Array.isArray(person.phone_numbers)) {
-          person.phone_numbers.forEach((entry: any) => {
-            if (typeof entry === 'string') {
-              candidatePhones.push(entry)
-            } else if (entry?.number) {
-              candidatePhones.push(entry.number)
+        const phoneCandidates = new Set<string>()
+        ;[match.phone_number, match.mobile_number].forEach(value => {
+          const candidate = asNonEmptyString(value)
+          if (candidate) {
+            phoneCandidates.add(candidate)
+          }
+        })
+
+        const phoneNumbers = Array.isArray(match.phone_numbers) ? match.phone_numbers : []
+        phoneNumbers.forEach(entry => {
+          if (typeof entry === 'string') {
+            const candidate = asNonEmptyString(entry)
+            if (candidate) {
+              phoneCandidates.add(candidate)
             }
-          })
-        }
-        const phone = candidatePhones.find(num => typeof num === 'string' && num.trim().length > 0)
-        if (phone) {
-          lead.phone = phone.trim()
+            return
+          }
+
+          if (!entry || typeof entry !== 'object') {
+            return
+          }
+
+          const entryRecord = entry as Record<string, unknown>
+          const candidate = asNonEmptyString(entryRecord.number)
+          if (candidate) {
+            phoneCandidates.add(candidate)
+          }
+        })
+
+        const selectedPhone = [...phoneCandidates].find(candidate => candidate.length > 0)
+        if (selectedPhone) {
+          lead.phone = selectedPhone.trim()
         }
 
-        if (person.linkedin_url) {
-          lead.linkedin_url = person.linkedin_url
+        const linkedin = asNonEmptyString(match.linkedin_url)
+        if (linkedin) {
+          lead.linkedin_url = linkedin
         }
 
-        if (person.organization?.name) {
-          lead.company_name = person.organization.name
-        }
-        if (person.organization?.website_url) {
-          lead.domain = person.organization.website_url
-        }
-        if (person.organization?.industry) {
-          lead.industry = person.organization.industry
+        const organizationRaw = match.organization
+        if (organizationRaw && typeof organizationRaw === 'object') {
+          const organization = organizationRaw as Record<string, unknown>
+          const name = asNonEmptyString(organization.name)
+          if (name) {
+            lead.company_name = name
+          }
+          const website = asNonEmptyString(organization.website_url)
+          if (website) {
+            lead.domain = website
+          }
+          const industry = asNonEmptyString(organization.industry)
+          if (industry) {
+            lead.industry = industry
+          }
         }
 
-        if (person.street_address) {
-          lead.street_address = person.street_address
+        const streetAddress = asNonEmptyString(match.street_address)
+        if (streetAddress) {
+          lead.street_address = streetAddress
         }
-        if (person.city) {
-          lead.city = person.city
+        const city = asNonEmptyString(match.city)
+        if (city) {
+          lead.city = city
         }
-        if (person.state) {
-          lead.state = person.state
+        const state = asNonEmptyString(match.state)
+        if (state) {
+          lead.state = state
         }
-        if (person.country) {
-          lead.country = person.country
+        const country = asNonEmptyString(match.country)
+        if (country) {
+          lead.country = country
         }
-        if (person.postal_code) {
-          lead.postal_code = person.postal_code
+        const postalCode = asNonEmptyString(match.postal_code)
+        if (postalCode) {
+          lead.postal_code = postalCode
         }
-        if (person.formatted_address) {
-          lead.formatted_address = person.formatted_address
+        const formattedAddress = asNonEmptyString(match.formatted_address)
+        if (formattedAddress) {
+          lead.formatted_address = formattedAddress
         }
       })
     } catch (error) {
@@ -1021,21 +1093,29 @@ export class LeadFetchWorker {
     return emailRegex.test(email)
   }
 
-  private async updateJobStatus(jobId: string, status: string, updates: any = {}) {
+  private async updateJobStatus(
+    jobId: string,
+    status: JobStatus,
+    updates: Prisma.CampaignJobUpdateInput = {},
+  ) {
     return prisma.campaignJob.update({
       where: { id: jobId },
       data: {
-        status: status as any,
+        status,
         ...updates,
       },
     })
   }
 
-  private async updateAttemptStatus(attemptId: string, status: string, updates: any = {}) {
+  private async updateAttemptStatus(
+    attemptId: string,
+    status: JobStatus,
+    updates: Prisma.JobAttemptUpdateInput = {},
+  ) {
     return prisma.jobAttempt.update({
       where: { id: attemptId },
       data: {
-        status: status as any,
+        status,
         ...updates,
       },
     })

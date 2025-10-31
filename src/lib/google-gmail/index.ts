@@ -1,4 +1,6 @@
 import { google } from 'googleapis';
+import type { OAuth2Client } from 'google-auth-library';
+import type { GmailAccount } from '@prisma/client';
 
 import { newOAuth2Client } from '@/lib/google-sheet/google-auth';
 import { prisma } from '@/lib/prisma';
@@ -8,20 +10,6 @@ export const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/userinfo.email',
 ]
-
-type GmailAccountRecord = {
-  id: string
-  userId: string
-  emailAddress: string
-  accessToken: string
-  refreshToken: string
-  expiresAt: Date
-  scope: string
-  tokenType: string
-  historyId?: string | null
-}
-
-const db = prisma as any;
 
 export class GmailUnauthorizedClientError extends Error {
   constructor(message: string) {
@@ -38,7 +26,7 @@ export async function createAuthorizedGmailClient(
   accessToken: string,
   refreshToken: string,
   redirectPath?: string,
-) {
+): Promise<OAuth2Client> {
   const oauth2Client = createGmailOAuthClient(redirectPath);
   oauth2Client.setCredentials({
     access_token: accessToken,
@@ -48,9 +36,9 @@ export async function createAuthorizedGmailClient(
 }
 
 export async function refreshGmailToken(
-  gmailAccount: GmailAccountRecord,
+  gmailAccount: GmailAccount,
   redirectPath?: string,
-): Promise<GmailAccountRecord> {
+): Promise<GmailAccount> {
   const oauth2Client = await createAuthorizedGmailClient(
     gmailAccount.accessToken,
     gmailAccount.refreshToken,
@@ -63,7 +51,7 @@ export async function refreshGmailToken(
     const nextRefreshToken = credentials.refresh_token || gmailAccount.refreshToken;
     const expiryMs = credentials.expiry_date || Date.now() + 55 * 60 * 1000;
 
-    return await db.gmailAccount.update({
+    return prisma.gmailAccount.update({
       where: { id: gmailAccount.id },
       data: {
         accessToken: nextAccessToken,
@@ -72,16 +60,10 @@ export async function refreshGmailToken(
         tokenType: credentials.token_type || gmailAccount.tokenType,
         scope: credentials.scope || gmailAccount.scope,
       },
-    }) as GmailAccountRecord;
-  } catch (error) {
-    const rawMessage =
-      (error as any)?.response?.data?.error_description ||
-      (error as any)?.response?.data?.error ||
-      (error as Error)?.message ||
-      'Unknown Gmail token error';
-    const isUnauthorizedClient =
-      rawMessage.toLowerCase().includes('unauthorized') ||
-      (error as any)?.code === 401;
+    });
+  } catch (error: unknown) {
+    const { message, code } = getGoogleAuthErrorDetails(error);
+    const isUnauthorizedClient = message.toLowerCase().includes('unauthorized') || code === 401;
 
     console.error('Gmail token refresh failed:', error);
 
@@ -96,18 +78,22 @@ export async function refreshGmailToken(
 }
 
 export async function ensureFreshGmailToken(
-  gmailAccount: GmailAccountRecord,
+  gmailAccount: GmailAccount,
   redirectPath?: string,
 ) {
-  const expiresAt = gmailAccount.expiresAt?.getTime?.() || gmailAccount.expiresAt.valueOf()
-  if (!expiresAt || expiresAt - Date.now() <= 5 * 60 * 1000) {
+  const expiresAtMs =
+    gmailAccount.expiresAt instanceof Date
+      ? gmailAccount.expiresAt.getTime()
+      : new Date(gmailAccount.expiresAt).getTime();
+
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs - Date.now() <= 5 * 60 * 1000) {
     return refreshGmailToken(gmailAccount, redirectPath)
   }
   return gmailAccount
 }
 
 export async function sendGmailMessage(
-  gmailAccount: GmailAccountRecord,
+  gmailAccount: GmailAccount,
   opts: {
     to: string
     subject: string
@@ -166,4 +152,53 @@ export async function sendGmailMessage(
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, '')
+}
+
+interface GoogleApiErrorShape {
+  message?: unknown
+  code?: unknown
+  response?: {
+    data?: {
+      error_description?: unknown
+      error?: unknown
+    }
+  }
+}
+
+const getGoogleAuthErrorDetails = (error: unknown): { message: string; code?: number } => {
+  if (!error) {
+    return { message: 'Unknown Gmail token error' }
+  }
+
+  if (typeof error === 'string') {
+    return { message: error }
+  }
+
+  if (error instanceof Error) {
+    const details = error as Error & GoogleApiErrorShape
+    const message =
+      (typeof details.response?.data?.error_description === 'string' && details.response.data.error_description) ||
+      (typeof details.response?.data?.error === 'string' && details.response.data.error) ||
+      details.message
+
+    return {
+      message,
+      code: typeof details.code === 'number' ? details.code : undefined,
+    }
+  }
+
+  if (typeof error === 'object') {
+    const details = error as GoogleApiErrorShape
+    const message =
+      (typeof details.response?.data?.error_description === 'string' && details.response.data.error_description) ||
+      (typeof details.response?.data?.error === 'string' && details.response.data.error) ||
+      (typeof details.message === 'string' ? details.message : 'Unknown Gmail token error')
+
+    return {
+      message,
+      code: typeof details.code === 'number' ? details.code : undefined,
+    }
+  }
+
+  return { message: 'Unknown Gmail token error' }
 }

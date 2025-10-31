@@ -5,7 +5,7 @@ import { google } from 'googleapis'
 import { prisma } from '@/lib/prisma'
 import { createGmailOAuthClient } from '@/lib/google-gmail'
 
-const db = prisma as any
+export const runtime = 'nodejs'
 
 export async function GET(request: NextRequest) {
   try {
@@ -56,7 +56,8 @@ export async function GET(request: NextRequest) {
     }
 
     const oauth2Client = createGmailOAuthClient()
-    const { tokens } = await oauth2Client.getToken(code)
+    const tokenResponse = await oauth2Client.getToken(code)
+    const tokens = tokenResponse.tokens
 
     if (!tokens.access_token || !tokens.refresh_token) {
       console.error('Invalid Gmail tokens received')
@@ -80,10 +81,10 @@ export async function GET(request: NextRequest) {
     const now = new Date()
     const expiresAt = tokens.expiry_date ? new Date(tokens.expiry_date) : new Date(Date.now() + 55 * 60 * 1000)
 
-    const existingAccount = await db.gmailAccount.findUnique({
+    const existingAccount = await prisma.gmailAccount.findUnique({
       where: { userId },
     })
-    const existingByEmail = await db.gmailAccount.findUnique({
+    const existingByEmail = await prisma.gmailAccount.findUnique({
       where: { emailAddress },
     })
 
@@ -98,7 +99,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (existingAccount) {
-      await db.gmailAccount.update({
+      await prisma.gmailAccount.update({
         where: { userId },
         data: baseData,
       })
@@ -108,7 +109,7 @@ export async function GET(request: NextRequest) {
           `Gmail account ${emailAddress} was previously linked to user ${existingByEmail.userId}, reassigning to ${userId}`,
         )
       }
-      await db.gmailAccount.update({
+      await prisma.gmailAccount.update({
         where: { emailAddress },
         data: {
           ...baseData,
@@ -116,7 +117,7 @@ export async function GET(request: NextRequest) {
         },
       })
     } else {
-      await db.gmailAccount.create({
+      await prisma.gmailAccount.create({
         data: {
           ...baseData,
           userId,

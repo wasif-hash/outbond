@@ -76,7 +76,7 @@ export default function Dashboard() {
         {/* Today's Activity */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg font-mono">Today's Activity</CardTitle>
+            <CardTitle className="text-lg font-mono">Today&apos;s Activity</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">

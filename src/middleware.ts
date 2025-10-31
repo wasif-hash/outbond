@@ -12,8 +12,6 @@ export async function middleware(request: NextRequest) {
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       request.headers.get('x-real-ip') ||
       'unknown'
-    const key = `api_rate_limit:${ip}`
-    
     // This would be implemented with Redis in production
     // For now, we'll just add headers for monitoring
     const response = NextResponse.next()

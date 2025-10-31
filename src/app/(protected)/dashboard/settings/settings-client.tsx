@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import dynamic from "next/dynamic"
-import { CheckCircle, Clock, ExternalLink, XCircle } from "lucide-react"
+import { CheckCircle, Clock,  XCircle } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"

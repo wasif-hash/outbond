@@ -4,16 +4,16 @@ import { Prisma } from '@prisma/client'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 
-const db = prisma as any
+export const runtime = 'nodejs'
 
-export async function DELETE(request: Request) {
+export async function DELETE() {
   const authResult = await verifyAuth()
   if (!authResult.success || !authResult.user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   try {
-    await db.gmailAccount.deleteMany({ where: { userId: authResult.user.userId } })
+    await prisma.gmailAccount.deleteMany({ where: { userId: authResult.user.userId } })
   } catch (error) {
     console.error('Gmail disconnect error:', error)
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2021') {

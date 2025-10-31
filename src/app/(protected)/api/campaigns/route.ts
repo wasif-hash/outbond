@@ -4,12 +4,14 @@ import { revalidateTag } from 'next/cache'
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { Prisma } from '@prisma/client'
+import type { Campaign, Prisma } from '@prisma/client'
 
 import { generateIdempotencyKey } from '@/lib/utils'
 import { getCampaignsForUser } from '@/lib/apollo/campaigns'
 import { z } from 'zod'
 import { enqueueJob } from '@/lib/queue'
+
+export const runtime = 'nodejs'
 
 const createCampaignSchema = z.object({
   name: z.string().min(1).max(255),
@@ -50,7 +52,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Prepare campaign data, removing undefined values
-    const campaignData = {
+    const campaignData: Prisma.CampaignUncheckedCreateInput = {
       userId: authResult.user.userId,
       name: validatedData.name,
       nicheOrJobTitle: validatedData.jobTitles, // Already joined by schema transform
@@ -64,7 +66,7 @@ export async function POST(request: NextRequest) {
       searchMode: validatedData.searchMode,
     }
 
-    let campaign
+    let campaign: Campaign
 
     try {
       campaign = await prisma.campaign.create({
@@ -74,7 +76,10 @@ export async function POST(request: NextRequest) {
       if (error instanceof Prisma.PrismaClientValidationError && error.message.includes('Unknown argument `searchMode`')) {
         console.warn('Prisma client does not yet recognise searchMode field, retrying without it. Consider regenerating Prisma client.')
 
-        const { searchMode, ...fallbackData } = campaignData as typeof campaignData & { searchMode?: string }
+        const fallbackData: Prisma.CampaignUncheckedCreateInput = { ...campaignData }
+        const { searchMode } = fallbackData
+        delete fallbackData.searchMode
+
         campaign = await prisma.campaign.create({
           data: fallbackData,
         })
@@ -85,7 +90,7 @@ export async function POST(request: NextRequest) {
             SET "searchMode" = ${searchMode}
             WHERE "id" = ${campaign.id}
           `
-          ;(campaign as any).searchMode = searchMode
+          campaign = { ...campaign, searchMode } as Campaign
         }
       } else {
         throw error

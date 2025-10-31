@@ -1,4 +1,5 @@
 // lib/auth.ts
+import type { User } from '@prisma/client'
 import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { jwtVerify } from 'jose'
@@ -106,13 +107,17 @@ export async function isAdmin(): Promise<boolean> {
 
 
 
-export async function getUserFromBearer(req: Request) {
+export async function getUserFromBearer(req: Request): Promise<User | null> {
   const auth = req.headers.get("authorization") || ""
   if (!auth.toLowerCase().startsWith("bearer ")) return null
   const token = auth.slice(7)
   try {
     const { payload } = await jwtVerify(token, JWT_SECRET)
-    const user = await prisma.user.findUnique({ where: { id: payload.sub as string } })
+    const userId = typeof payload.sub === 'string' ? payload.sub : undefined
+    if (!userId) {
+      return null
+    }
+    const user = await prisma.user.findUnique({ where: { id: userId } })
     return user
   } catch {
     return null
@@ -120,9 +125,9 @@ export async function getUserFromBearer(req: Request) {
 }
 
 export function requireAdmin(
-  handler: (req: Request, ctx: any, user: any) => Promise<Response>
+  handler: (req: Request, ctx: Record<string, unknown>, user: User) => Promise<Response>,
 ) {
-  return async (req: Request, ctx: any) => {
+  return async (req: Request, ctx: Record<string, unknown>) => {
     const user = await getUserFromBearer(req)
     if (!user || user.role !== "admin") {
       return new Response(JSON.stringify({ error: "Not authenticated" }), {

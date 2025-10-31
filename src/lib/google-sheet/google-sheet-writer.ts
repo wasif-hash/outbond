@@ -1,5 +1,6 @@
 // src/lib/google-sheet-writer.ts
-import { google } from 'googleapis'
+import { google, sheets_v4 } from 'googleapis'
+import type { OAuth2Client } from 'google-auth-library'
 import { LEAD_SHEET_COLUMNS, SheetLeadRow } from '../utils'
 
 const MAX_REQUESTS_PER_MINUTE = 60
@@ -7,7 +8,7 @@ const DEFAULT_BATCH_SIZE = 500
 const MAX_APPEND_RETRIES = 5
 
 export async function writeLeadsToSheet(
-  oauth2Client: any,
+  oauth2Client: OAuth2Client,
   spreadsheetId: string,
   range: string,
   rows: SheetLeadRow[],
@@ -43,7 +44,7 @@ export async function writeLeadsToSheet(
 }
 
 async function appendWithRetry(
-  sheets: ReturnType<typeof google.sheets>,
+  sheets: sheets_v4.Sheets,
   params: {
     spreadsheetId: string
     range: string
@@ -65,9 +66,10 @@ async function appendWithRetry(
         },
       })
       return
-    } catch (error: any) {
+    } catch (error: unknown) {
       const statusCode = extractStatusCode(error)
-      const isAuthScopeError = typeof error?.message === 'string' && error.message.includes('insufficient authentication scopes')
+      const message = extractMessage(error)
+      const isAuthScopeError = message?.includes('insufficient authentication scopes')
       const shouldRetry = statusCode === 429 || (statusCode !== null && statusCode >= 500 && statusCode < 600)
 
       console.error(`Failed to write batch (attempt ${attempt + 1}):`, error)
@@ -88,27 +90,57 @@ async function appendWithRetry(
   }
 }
 
-function extractStatusCode(error: any): number | null {
-  if (!error) return null
+type GoogleError = {
+  response?: { status?: number }
+  code?: number | string
+  errors?: Array<{ reason?: string }>
+}
 
-  const codeFromResponse = error?.response?.status
-  if (typeof codeFromResponse === 'number') {
-    return codeFromResponse
+const extractStatusCode = (error: unknown): number | null => {
+  if (!error || typeof error !== 'object') {
+    return null
   }
 
-  const codeFromError = typeof error?.code === 'number' ? error.code : Number(error?.code)
-  if (!Number.isNaN(codeFromError) && Number.isFinite(codeFromError)) {
-    return Number(codeFromError)
+  const maybeError = error as GoogleError
+
+  if (typeof maybeError.response?.status === 'number') {
+    return maybeError.response.status
   }
 
-  const reason = error?.errors && Array.isArray(error.errors)
-    ? error.errors.find((err: any) => typeof err?.reason === 'string')?.reason
-    : null
+  if (typeof maybeError.code === 'number') {
+    return maybeError.code
+  }
 
-  if (reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded') {
+  const numericCode = Number(maybeError.code)
+  if (Number.isFinite(numericCode)) {
+    return numericCode
+  }
+
+  const rateLimitReason = maybeError.errors?.find((err) =>
+    typeof err?.reason === 'string' &&
+    (err.reason === 'rateLimitExceeded' || err.reason === 'userRateLimitExceeded'),
+  )
+
+  if (rateLimitReason) {
     return 429
   }
 
+  return null
+}
+
+const extractMessage = (error: unknown): string | null => {
+  if (!error) {
+    return null
+  }
+  if (typeof error === 'string') {
+    return error
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  if (typeof error === 'object' && 'message' in error && typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message
+  }
   return null
 }
 
@@ -119,7 +151,7 @@ async function delay(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function ensureHeaders(sheets: any, spreadsheetId: string, range: string) {
+async function ensureHeaders(sheets: sheets_v4.Sheets, spreadsheetId: string, range: string) {
   try {
     // Extract sheet name from range (e.g., "Leads!A:Z" -> "Leads")
     const sheetName = range.includes('!') ? range.split('!')[0] : 'Sheet1'
@@ -147,11 +179,11 @@ async function ensureHeaders(sheets: any, spreadsheetId: string, range: string) 
 
       console.log(`Added headers to spreadsheet ${spreadsheetId} in sheet ${sheetName}`)
     }
-  } catch (error:any) {
+  } catch (error: unknown) {
     console.error('Failed to ensure headers:', error)
     
     // Check if it's an authentication scope error
-    if (error.message && error.message.includes('insufficient authentication scopes')) {
+    if (error instanceof Error && error.message.includes('insufficient authentication scopes')) {
       console.error('❌ Authentication scopes issue detected in headers check.')
       throw new Error('Insufficient Google Sheets permissions. Please reconnect your Google account with write permissions.')
     }
@@ -182,7 +214,7 @@ function leadToSheetRow(lead: SheetLeadRow): string[] {
 }
 
 export async function appendToSheet(
-  oauth2Client: any,
+  oauth2Client: OAuth2Client,
   spreadsheetId: string,
   sheetName: string,
   values: string[][]
@@ -201,7 +233,7 @@ export async function appendToSheet(
 }
 
 export async function createNewSheet(
-  oauth2Client: any,
+  oauth2Client: OAuth2Client,
   spreadsheetId: string,
   sheetTitle: string
 ): Promise<number> {
@@ -225,7 +257,7 @@ export async function createNewSheet(
   return response.data.replies?.[0]?.addSheet?.properties?.sheetId || 0
 }
 
-export async function getSheetInfo(oauth2Client: any, spreadsheetId: string) {
+export async function getSheetInfo(oauth2Client: OAuth2Client, spreadsheetId: string) {
   const sheets = google.sheets({ version: 'v4', auth: oauth2Client })
 
   const response = await sheets.spreadsheets.get({

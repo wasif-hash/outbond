@@ -1,5 +1,6 @@
 // src/lib/queue.ts
-import { Queue, Worker, Job } from 'bullmq'
+import { Queue, Job } from 'bullmq'
+import type { JobsOptions, JobType } from 'bullmq'
 import Redis from 'ioredis'
 
 // Redis connection
@@ -48,7 +49,7 @@ export const emailSendQueue = new Queue('email-send', {
 export async function enqueueJob(
   jobName: string,
   data: LeadFetchJobData,
-  options: any = {}
+  options: JobsOptions = {},
 ): Promise<Job> {
   return leadFetchQueue.add(jobName, data, {
     // Delay job to prevent immediate execution and allow for spacing
@@ -59,7 +60,7 @@ export async function enqueueJob(
 
 export async function enqueueEmailSendJob(
   data: EmailSendQueueData,
-  options: any = {}
+  options: JobsOptions = {},
 ): Promise<Job> {
   return emailSendQueue.add('email-send', data, {
     delay: options.delay || 0,
@@ -68,8 +69,8 @@ export async function enqueueEmailSendJob(
 }
 
 export async function removePendingCampaignJobs(campaignId: string): Promise<number> {
-  const jobStates = ['wait', 'delayed', 'paused', 'prioritized', 'waiting-children']
-  const jobs = await leadFetchQueue.getJobs(jobStates as any)
+  const jobStates: JobType[] = ['wait', 'delayed', 'paused', 'prioritized', 'waiting-children']
+  const jobs = await leadFetchQueue.getJobs(jobStates)
   let removed = 0
 
   for (const job of jobs) {

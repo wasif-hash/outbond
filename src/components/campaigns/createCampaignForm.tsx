@@ -68,7 +68,7 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
   // Check connection status when modal opens
   useEffect(() => {
     if (open) {
-      checkConnectionStatus()
+      void checkConnectionStatus()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -77,7 +77,7 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
   useEffect(() => {
     if (status?.isConnected && !status?.isExpired && spreadsheets.length === 0) {
       console.log('Status is connected, fetching spreadsheets...')
-      fetchSpreadsheets()
+      void fetchSpreadsheets()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, spreadsheets.length])
@@ -197,7 +197,7 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
   }
 
   const handleRefreshStatus = () => {
-    checkConnectionStatus()
+    void checkConnectionStatus()
   }
 
   const selectedSheet = spreadsheets.find(sheet => sheet.id === formData.googleSheetId)
@@ -400,7 +400,9 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
               loading={loading}
               onConnect={connectGoogleAccount}
               onDisconnect={disconnectGoogleAccount}
-              onFetchSpreadsheets={fetchSpreadsheets}
+              onFetchSpreadsheets={() => {
+                void fetchSpreadsheets({ force: true })
+              }}
               onRefreshStatus={handleRefreshStatus}
             />
 
