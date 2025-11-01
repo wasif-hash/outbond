@@ -8,7 +8,8 @@ import { Eye, Download, RefreshCw } from "lucide-react"
 import { FastSpinner } from "./FastSpinner"
 import type { ManualCampaignGroup } from "./types"
 import type { OutreachedJob } from "@/types/outreach"
-import { jobStatusVariant } from "@/lib/leads/outreach"
+import { cn } from "@/lib/utils"
+import { jobStatusBadgeProps } from "@/lib/leads/outreach"
 
 type OutreachHistoryProps = {
   jobsLoading: boolean
@@ -215,11 +216,22 @@ function LegacyEmails({
                     <div className="text-xs text-muted-foreground">{job.leadEmail}</div>
                   </td>
                   <td className="px-4 py-2 text-muted-foreground line-clamp-1">{job.subject}</td>
-                  <td className="px-4 py-2">
-                    <Badge variant={jobStatusVariant(job.status)}>
-                      {job.status === "SENT" ? "COMPLETED" : job.status}
-                    </Badge>
-                  </td>
+                <td className="px-4 py-2">
+                  {(() => {
+                    const { label, className } = jobStatusBadgeProps(job.status)
+                    return (
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "min-w-[88px] justify-center uppercase tracking-wide",
+                          className,
+                        )}
+                      >
+                        {label}
+                      </Badge>
+                    )
+                  })()}
+                </td>
                   <td className="px-4 py-2 text-xs whitespace-nowrap text-muted-foreground">
                     {job.sentAt ? new Date(job.sentAt).toLocaleString() : "—"}
                   </td>

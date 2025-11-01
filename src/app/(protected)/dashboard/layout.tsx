@@ -25,8 +25,8 @@ import { LoaderThree } from "@/components/ui/loader"
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: BarChart3 },
-  { name: "Leads", href: "/dashboard/leads", icon: Users },
-  { name: "Campaigns", href: "/dashboard/campaigns", icon: Send },
+  { name: "Outreach", href: "/dashboard/outreach", icon: Users },
+  { name: "Leads", href: "/dashboard/leads", icon: Send },
   { name: "Replies", href: "/dashboard/replies", icon: MessageSquare },
   { name: "Bookings", href: "/dashboard/bookings", icon: Calendar },
   { name: "Users", href: "/dashboard/users", icon: User },

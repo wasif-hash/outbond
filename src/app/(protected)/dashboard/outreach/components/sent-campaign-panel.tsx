@@ -5,8 +5,9 @@ import { OverlayPanel } from "./overlay-panel"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Download, Eye } from "lucide-react"
-import { jobStatusVariant } from "@/lib/leads/outreach"
+import { jobStatusBadgeProps } from "@/lib/leads/outreach"
 import type { OutreachedJob } from "@/types/outreach"
+import { cn } from "@/lib/utils"
 
 type SentCampaignPanelProps = {
   open: boolean
@@ -83,9 +84,20 @@ export function SentCampaignPanel({
                       </td>
                       <td className="px-4 py-2 text-muted-foreground line-clamp-1">{job.subject}</td>
                       <td className="px-4 py-2">
-                        <Badge variant={jobStatusVariant(job.status)}>
-                          {job.status === "SENT" ? "COMPLETED" : job.status}
-                        </Badge>
+                        {(() => {
+                          const { label, className } = jobStatusBadgeProps(job.status)
+                          return (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "min-w-[88px] justify-center uppercase tracking-wide",
+                                className,
+                              )}
+                            >
+                              {label}
+                            </Badge>
+                          )
+                        })()}
                       </td>
                       <td className="px-4 py-2 text-xs text-muted-foreground">
                         {job.sentAt ? new Date(job.sentAt).toLocaleString() : "Not sent"}

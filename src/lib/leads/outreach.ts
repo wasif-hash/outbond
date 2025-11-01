@@ -76,3 +76,43 @@ export function jobStatusVariant(status: string): "default" | "outline" | "posit
       return 'outline'
   }
 }
+
+export function jobStatusBadgeProps(
+  status: string | null | undefined,
+): { label: string; className: string } {
+  const normalized = (status ?? '').toUpperCase()
+
+  switch (normalized) {
+    case 'SENT':
+      return {
+        label: 'Sent',
+        className: 'border-transparent bg-emerald-500 text-white hover:bg-emerald-500/90',
+      }
+    case 'QUEUED':
+      return {
+        label: 'Queued',
+        className: 'border-transparent bg-amber-500 text-white hover:bg-amber-500/90',
+      }
+    case 'RUNNING':
+    case 'PROCESSING':
+      return {
+        label: 'Processing',
+        className: 'border-transparent bg-sky-500 text-white hover:bg-sky-500/90',
+      }
+    case 'FAILED':
+      return {
+        label: 'Failed',
+        className: 'border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80',
+      }
+    case 'PENDING':
+      return {
+        label: 'Pending',
+        className: 'border-border bg-muted text-foreground',
+      }
+    default:
+      return {
+        label: normalized || 'Pending',
+        className: 'border-border bg-muted text-foreground',
+      }
+  }
+}
