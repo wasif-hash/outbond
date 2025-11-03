@@ -386,7 +386,7 @@ export async function authenticateUser(email: string, password: string): Promise
  */
 export async function initializeMainAdmin(): Promise<UserResponse> {
   try {
-    const adminEmail = 'shanon@creatorwealthtools.com'
+    const adminEmail = 'shannon@creatorwealthtools.com'
     
     // Check if admin already exists
     const existingAdmin = await prisma.user.findUnique({
