@@ -147,23 +147,50 @@ export class TokenBucketRateLimit {
   }
 }
 
+const sanitizeKey = (raw: string): string => {
+  const trimmed = raw.trim().toLowerCase()
+  const sanitized = trimmed.replace(/[^a-z0-9:_-]/g, '')
+  return sanitized.length > 0 ? sanitized : 'unknown'
+}
+
 export const createUserRateLimit = (userId: string) => new TokenBucketRateLimit({
-  key: `user:${userId}`,
+  key: `user:${sanitizeKey(userId)}`,
   maxTokens: 50, // 50 requests per user
   refillRate: 2, // 2 requests per second per user
 })
 
 export const createCampaignRateLimit = (campaignId: string) => new TokenBucketRateLimit({
-  key: `campaign:${campaignId}`,
+  key: `campaign:${sanitizeKey(campaignId)}`,
   maxTokens: 20, // 20 requests per campaign
   refillRate: 1, // 1 request per second per campaign
 })
 
 export const createEmailSendRateLimit = (userId: string) => new TokenBucketRateLimit({
-  key: `email-send:${userId}`,
+  key: `email-send:${sanitizeKey(userId)}`,
   maxTokens: 5,
   refillRate: 1,
 })
+
+export const createLoginRateLimit = (identifier: string) =>
+  new TokenBucketRateLimit({
+    key: `login:${sanitizeKey(identifier)}`,
+    maxTokens: 5, // allow short bursts of login attempts
+    refillRate: 5 / 60, // refill bucket roughly once per minute
+  })
+
+export const createAdminActionRateLimit = (identifier: string) =>
+  new TokenBucketRateLimit({
+    key: `admin-action:${sanitizeKey(identifier)}`,
+    maxTokens: 20, // limit privileged operations
+    refillRate: 20 / (30 * 60), // ~20 actions per 30 minutes
+  })
+
+export const createAccountActionRateLimit = (identifier: string) =>
+  new TokenBucketRateLimit({
+    key: `account-action:${sanitizeKey(identifier)}`,
+    maxTokens: 10, // allow reasonable account updates
+    refillRate: 10 / (15 * 60), // ~10 actions per 15 minutes
+  })
 
 // Distributed locking for preventing concurrent job execution
 export class RedisLock {

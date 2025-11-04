@@ -40,12 +40,16 @@ export function GmailConnectPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-mono font-bold text-foreground">Gmail Integration</h2>
-          <p className="text-muted-foreground">Send personalised outreach emails directly from your connected Gmail inbox.</p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <Mail className="h-10 w-10 shrink-0 text-primary" />
+          <div>
+            <h2 className="text-2xl font-mono font-bold text-foreground">Gmail Integration</h2>
+            <p className="text-muted-foreground">
+              Send personalised outreach emails directly from your connected Gmail inbox.
+            </p>
+          </div>
         </div>
-        <Mail className="h-10 w-10 text-primary" />
       </div>
 
       {error && (
@@ -60,8 +64,8 @@ export function GmailConnectPanel() {
       )}
 
       <div className="rounded-lg border border-border bg-card p-4">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-2">
             <div className="text-sm text-muted-foreground">Status</div>
             <div className="flex items-center gap-2">
               <Badge
@@ -86,7 +90,7 @@ export function GmailConnectPanel() {
               )}
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
             <Button
               variant="outline"
               size="sm"
@@ -94,6 +98,7 @@ export function GmailConnectPanel() {
                 refreshStatus().catch(() => undefined)
               }}
               disabled={loading || statusLoading}
+              className="border-primary/40 text-primary hover:bg-primary/10"
             >
               {statusLoading ? (
                 <RefreshCw className="h-4 w-4 animate-spin mr-2" />
@@ -104,10 +109,11 @@ export function GmailConnectPanel() {
             </Button>
             {status?.isConnected ? (
               <Button
-                variant="destructive"
+                variant="outline"
                 size="sm"
                 onClick={disconnect}
                 disabled={loading}
+                className="border-primary/40 text-primary hover:bg-primary/10"
               >
                 <Unlink className="h-4 w-4 mr-2" />
                 Disconnect
@@ -155,24 +161,7 @@ export function GmailConnectPanel() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-lg border border-border p-4">
-          <h3 className="font-mono text-sm font-semibold text-foreground mb-2">Why connect Gmail?</h3>
-          <ul className="list-disc pl-5 space-y-1 text-sm text-muted-foreground">
-            <li>Send outreach directly from your own inbox to stay authentic.</li>
-            <li>Respect Gmail rate limits with automatic pacing.</li>
-            <li>Track send history and status per lead.</li>
-          </ul>
-        </div>
-        <div className="rounded-lg border border-border p-4">
-          <h3 className="font-mono text-sm font-semibold text-foreground mb-2">Security</h3>
-          <ul className="list-disc pl-5 space-y-1 text-sm text-muted-foreground">
-            <li>OAuth 2.0 secure handshake, we never store your password.</li>
-            <li>Tokens encrypted at rest and refresh automatically.</li>
-            <li>Disconnect at any time to revoke access.</li>
-          </ul>
-        </div>
-      </div>
+   
     </div>
   )
 }

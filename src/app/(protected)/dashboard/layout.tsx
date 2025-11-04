@@ -13,6 +13,7 @@ import {
   Calendar,
   Settings,
   User,
+  UserCircle,
   Menu,
   X,
   LogOut,
@@ -32,6 +33,8 @@ const navigation = [
   { name: "Users", href: "/dashboard/users", icon: User },
   { name: "Integrations", href: "/dashboard/settings", icon: Settings },
 ]
+
+const accountNavigation = { name: "Account", href: "/dashboard/account", icon: UserCircle }
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient())
@@ -88,7 +91,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <X className="h-5 w-5" />
               </Button>
             </div>
-            <nav className="mt-6 px-3">
+            <nav className="mt-6 px-3 pb-6 flex flex-col gap-1">
               {navigation.map((item) => {
                 const isActive = pathname === item.href
                 return (
@@ -100,7 +103,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       handleRouteChange(item.href)
                     }}
                     className={cn(
-                      "group flex items-center px-3 py-2 text-sm font-medium rounded-lg mb-1 transition-colors",
+                      "group flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors",
                       isActive
                         ? "bg-primary text-primary-foreground"
                         : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -111,6 +114,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   </Link>
                 )
               })}
+              <div className="mt-4 border-t border-sidebar-border pt-4">
+                <Link
+                  href={accountNavigation.href}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    handleRouteChange(accountNavigation.href)
+                  }}
+                  className={cn(
+                    "group flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors",
+                    pathname === accountNavigation.href
+                      ? "bg-primary text-primary-foreground"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  )}
+                >
+                  <accountNavigation.icon className="mr-3 h-4 w-4" />
+                  {accountNavigation.name}
+                </Link>
+              </div>
             </nav>
           </div>
         </div>
@@ -122,7 +143,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="flex items-center h-16 px-6 border-b border-sidebar-border">
             <div className="text-xl font-mono font-bold text-primary">CWT</div>
           </div>
-          <nav className="mt-6 flex-1 px-3">
+          <nav className="mt-6 flex-1 px-3 pb-6 flex flex-col gap-1">
             {navigation.map((item) => {
               const isActive = pathname === item.href
               return (
@@ -134,7 +155,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     handleRouteChange(item.href)
                   }}
                   className={cn(
-                    "group flex items-center px-3 py-2 text-sm font-medium rounded-lg mb-1 transition-colors",
+                    "group flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors",
                     isActive
                       ? "bg-primary text-primary-foreground"
                       : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
@@ -145,6 +166,24 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 </Link>
               )
             })}
+            <div className="mt-auto border-t border-sidebar-border pt-4">
+              <Link
+                href={accountNavigation.href}
+                onClick={(event) => {
+                  event.preventDefault()
+                  handleRouteChange(accountNavigation.href)
+                }}
+                className={cn(
+                  "group flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors",
+                  pathname === accountNavigation.href
+                    ? "bg-primary text-primary-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                )}
+              >
+                <accountNavigation.icon className="mr-3 h-4 w-4" />
+                {accountNavigation.name}
+              </Link>
+            </div>
           </nav>
         </div>
       </div>
@@ -168,7 +207,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
           
           <div className="flex items-center space-x-4">
-            {/* <span className="text-sm text-muted-foreground hidden sm:block">shanon@creatorwealthtools.com</span>
+            {/* <span className="text-sm text-muted-foreground hidden sm:block">shannon@creatorwealthtools.com</span>
             <div className="flex items-center space-x-2 text-sm text-muted-foreground  sm:flex">
               <User className="h-4 w-4" />
               <span>User</span>

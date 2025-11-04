@@ -7,13 +7,33 @@ const JWT_SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 )
 
+const resolveClientIdentifier = (request: NextRequest): string =>
+  request.ip ||
+  request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+  request.headers.get('x-real-ip') ||
+  'unknown'
+
 export async function POST(request: NextRequest) {
   try {
     const { email, password } = await request.json()
-    const authResult = await authenticateUser(email, password)
+    const clientIdentifier = resolveClientIdentifier(request)
+    const authResult = await authenticateUser(
+      email,
+      password,
+      {
+        requesterIp: clientIdentifier
+      }
+    )
 
     if (!authResult.success || !authResult.user) {
-      return NextResponse.json({ error: authResult.message }, { status: 401 })
+      const status = authResult.error === 'RATE_LIMIT_EXCEEDED' ? 429 : 401
+      const response = NextResponse.json({ error: authResult.message }, { status })
+
+      if (status === 429 && authResult.retryAfterSeconds) {
+        response.headers.set('Retry-After', String(authResult.retryAfterSeconds))
+      }
+
+      return response
     }
 
     // Create JWT

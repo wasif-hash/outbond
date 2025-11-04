@@ -2,11 +2,15 @@
 // actions/user-actions.ts
 "use server"
 
-import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { revalidatePath } from 'next/cache'
 
-const prisma = new PrismaClient()
+import { prisma } from '@/lib/prisma'
+import {
+  createAccountActionRateLimit,
+  createAdminActionRateLimit,
+  createLoginRateLimit
+} from '@/lib/rate-limit'
 
 // Types for better type safety
 export interface CreateUserData {
@@ -27,6 +31,7 @@ export interface UserResponse {
     createdAt: Date
   }
   error?: string
+  retryAfterSeconds?: number
 }
 
 export interface UsersListResponse {
@@ -42,13 +47,135 @@ export interface UsersListResponse {
   error?: string
 }
 
+export interface ActionRequestContext {
+  requesterId?: string
+  requesterEmail?: string
+  requesterIp?: string
+}
+
+export interface AuthResponse {
+  success: boolean
+  user?: {
+    id: string
+    email: string
+    role: string
+  }
+  message: string
+  error?: string
+  retryAfterSeconds?: number
+}
+
+const MAIN_ADMIN_EMAIL = 'shannon@creatorwealthtools.com' as const
+const DEFAULT_ADMIN_PASSWORD = 'CWTAdmin2024!' as const
+const RATE_LIMIT_ERROR = 'RATE_LIMIT_EXCEEDED'
+const RATE_LIMIT_MESSAGE = 'Too many attempts. Please try again later.'
+
+type RateLimitOutcome = {
+  allowed: boolean
+  retryAfterSeconds?: number
+}
+
+const computeRetryAfterSeconds = (resetTime: number): number =>
+  Math.max(1, Math.ceil((resetTime - Date.now()) / 1000))
+
+const buildRateLimitKey = (
+  context: ActionRequestContext,
+  fallbackKey: string
+): string =>
+  context.requesterId ??
+  context.requesterEmail ??
+  context.requesterIp ??
+  fallbackKey
+
+async function enforceAdminRateLimit(
+  context: ActionRequestContext,
+  tokens: number = 1
+): Promise<RateLimitOutcome> {
+  try {
+    const limiter = createAdminActionRateLimit(
+      buildRateLimitKey(context, 'admin-global')
+    )
+    const result = await limiter.checkAndConsume(tokens)
+
+    if (!result.allowed) {
+      return {
+        allowed: false,
+        retryAfterSeconds: computeRetryAfterSeconds(result.resetTime)
+      }
+    }
+  } catch (error) {
+    console.error('Admin action rate limit check failed:', error)
+  }
+
+  return { allowed: true }
+}
+
+async function enforceLoginRateLimit(
+  context: ActionRequestContext,
+  fallbackKey: string
+): Promise<RateLimitOutcome> {
+  try {
+    const limiter = createLoginRateLimit(
+      buildRateLimitKey(context, fallbackKey)
+    )
+    const result = await limiter.checkAndConsume()
+
+    if (!result.allowed) {
+      return {
+        allowed: false,
+        retryAfterSeconds: computeRetryAfterSeconds(result.resetTime)
+      }
+    }
+  } catch (error) {
+    console.error('Login rate limit check failed:', error)
+  }
+
+  return { allowed: true }
+}
+
+async function enforceAccountRateLimit(
+  context: ActionRequestContext,
+  fallbackKey: string
+): Promise<RateLimitOutcome> {
+  try {
+    const limiter = createAccountActionRateLimit(
+      buildRateLimitKey(context, fallbackKey)
+    )
+    const result = await limiter.checkAndConsume()
+
+    if (!result.allowed) {
+      return {
+        allowed: false,
+        retryAfterSeconds: computeRetryAfterSeconds(result.resetTime)
+      }
+    }
+  } catch (error) {
+    console.error('Account action rate limit check failed:', error)
+  }
+
+  return { allowed: true }
+}
+
 /**
  * Create a new user with hashed password
  * This is the main function for inviting users
  */
-export async function createInvitedUser(data: CreateUserData): Promise<UserResponse> {
+export async function createInvitedUser(
+  data: CreateUserData,
+  context: ActionRequestContext = {}
+): Promise<UserResponse> {
   try {
     const { email, password, role } = data
+
+    const rateLimit = await enforceAdminRateLimit(context)
+    if (!rateLimit.allowed) {
+      return {
+        success: false,
+        message: RATE_LIMIT_MESSAGE,
+        error: RATE_LIMIT_ERROR,
+        retryAfterSeconds: rateLimit.retryAfterSeconds
+      }
+    }
 
     // Validate input data
     if (!email || !password || !role) {
@@ -59,9 +186,11 @@ export async function createInvitedUser(data: CreateUserData): Promise<UserRespo
       }
     }
 
+    const normalizedEmail = email.trim().toLowerCase()
+
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(email)) {
+    if (!emailRegex.test(normalizedEmail)) {
       return {
         success: false,
         message: 'Invalid email format',
@@ -80,7 +209,7 @@ export async function createInvitedUser(data: CreateUserData): Promise<UserRespo
 
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() }
+      where: { email: normalizedEmail }
     })
 
     if (existingUser) {
@@ -98,7 +227,7 @@ export async function createInvitedUser(data: CreateUserData): Promise<UserRespo
     // Create the user
     const newUser = await prisma.user.create({
       data: {
-        email: email.toLowerCase(),
+        email: normalizedEmail,
         password: hashedPassword,
         role,
         isInvited: true,
@@ -170,8 +299,27 @@ export async function getAllUsers(): Promise<UsersListResponse> {
  * Delete a user by ID
  * Includes safety checks to prevent self-deletion and admin protection
  */
-export async function deleteUser(userId: string, currentUserEmail: string): Promise<UserResponse> {
+export async function deleteUser(
+  userId: string,
+  currentUserEmail: string,
+  context: ActionRequestContext = {}
+): Promise<UserResponse> {
   try {
+    const rateLimit = await enforceAdminRateLimit({
+      requesterId: context.requesterId,
+      requesterEmail: context.requesterEmail ?? currentUserEmail,
+      requesterIp: context.requesterIp
+    })
+
+    if (!rateLimit.allowed) {
+      return {
+        success: false,
+        message: RATE_LIMIT_MESSAGE,
+        error: RATE_LIMIT_ERROR,
+        retryAfterSeconds: rateLimit.retryAfterSeconds
+      }
+    }
+
     if (!userId) {
       return {
         success: false,
@@ -203,7 +351,7 @@ export async function deleteUser(userId: string, currentUserEmail: string): Prom
     }
 
     // Prevent deletion of the main admin
-    if (userToDelete.email === 'shanon@creatorwealthtools.com') {
+    if (userToDelete.email === MAIN_ADMIN_EMAIL) {
       return {
         success: false,
         message: 'Cannot delete the main admin account',
@@ -241,9 +389,25 @@ export async function deleteUser(userId: string, currentUserEmail: string): Prom
 export async function updateUserRole(
   userId: string, 
   newRole: 'admin' | 'user' | 'moderator',
-  currentUserEmail: string
+  currentUserEmail: string,
+  context: ActionRequestContext = {}
 ): Promise<UserResponse> {
   try {
+    const rateLimit = await enforceAdminRateLimit({
+      requesterId: context.requesterId,
+      requesterEmail: context.requesterEmail ?? currentUserEmail,
+      requesterIp: context.requesterIp
+    })
+
+    if (!rateLimit.allowed) {
+      return {
+        success: false,
+        message: RATE_LIMIT_MESSAGE,
+        error: RATE_LIMIT_ERROR,
+        retryAfterSeconds: rateLimit.retryAfterSeconds
+      }
+    }
+
     if (!userId || !newRole) {
       return {
         success: false,
@@ -275,7 +439,7 @@ export async function updateUserRole(
     }
 
     // Prevent changing the main admin's role
-    if (userToUpdate.email === 'shanon@creatorwealthtools.com') {
+    if (userToUpdate.email === MAIN_ADMIN_EMAIL) {
       return {
         success: false,
         message: 'Cannot change the main admin\'s role',
@@ -319,35 +483,150 @@ export async function updateUserRole(
 }
 
 /**
- * Authenticate user for login
- * This is used by the login API route
+ * Update password for the current user
  */
-export async function authenticateUser(email: string, password: string): Promise<{
-  success: boolean
-  user?: {
-    id: string
-    email: string
-    role: string
-  }
-  message: string
-}> {
+export async function updateCurrentUserPassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+  context: ActionRequestContext = {}
+): Promise<UserResponse> {
   try {
-    if (!email || !password) {
+    if (!userId || !currentPassword || !newPassword) {
       return {
         success: false,
-        message: 'Email and password are required'
+        message: 'All password fields are required',
+        error: 'MISSING_FIELDS'
       }
     }
 
-    // Find user by email
+    if (newPassword.length < 8) {
+      return {
+        success: false,
+        message: 'New password must be at least 8 characters long',
+        error: 'WEAK_PASSWORD'
+      }
+    }
+
+    const rateLimit = await enforceAccountRateLimit(
+      {
+        requesterId: context.requesterId ?? userId,
+        requesterEmail: context.requesterEmail,
+        requesterIp: context.requesterIp
+      },
+      userId
+    )
+
+    if (!rateLimit.allowed) {
+      return {
+        success: false,
+        message: RATE_LIMIT_MESSAGE,
+        error: RATE_LIMIT_ERROR,
+        retryAfterSeconds: rateLimit.retryAfterSeconds
+      }
+    }
+
     const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() }
+      where: { id: userId }
     })
 
     if (!user) {
       return {
         success: false,
-        message: 'Invalid email or password'
+        message: 'User not found',
+        error: 'USER_NOT_FOUND'
+      }
+    }
+
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password)
+
+    if (!isCurrentPasswordValid) {
+      return {
+        success: false,
+        message: 'The current password is incorrect',
+        error: 'INVALID_CREDENTIALS'
+      }
+    }
+
+    if (currentPassword === newPassword) {
+      return {
+        success: false,
+        message: 'New password must be different from the current password',
+        error: 'NO_PASSWORD_CHANGE'
+      }
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12)
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        password: hashedPassword,
+        updatedAt: new Date()
+      }
+    })
+
+    return {
+      success: true,
+      message: 'Password updated successfully'
+    }
+  } catch (error) {
+    console.error('Error updating user password:', error)
+    return {
+      success: false,
+      message: 'Failed to update password. Please try again.',
+      error: 'DATABASE_ERROR'
+    }
+  }
+}
+
+/**
+ * Authenticate user for login
+ * This is used by the login API route
+ */
+export async function authenticateUser(
+  email: string,
+  password: string,
+  context: ActionRequestContext = {}
+): Promise<AuthResponse> {
+  try {
+    if (!email || !password) {
+      return {
+        success: false,
+        message: 'Email and password are required',
+        error: 'MISSING_FIELDS'
+      }
+    }
+
+    const normalizedEmail = email.trim().toLowerCase()
+    const rateLimit = await enforceLoginRateLimit(
+      {
+        requesterId: context.requesterId,
+        requesterEmail: context.requesterEmail ?? normalizedEmail,
+        requesterIp: context.requesterIp
+      },
+      normalizedEmail || 'anonymous-login'
+    )
+
+    if (!rateLimit.allowed) {
+      return {
+        success: false,
+        message: RATE_LIMIT_MESSAGE,
+        error: RATE_LIMIT_ERROR,
+        retryAfterSeconds: rateLimit.retryAfterSeconds
+      }
+    }
+
+    // Find user by email
+    const user = await prisma.user.findUnique({
+      where: { email: normalizedEmail }
+    })
+
+    if (!user) {
+      return {
+        success: false,
+        message: 'Invalid email or password',
+        error: 'INVALID_CREDENTIALS'
       }
     }
 
@@ -357,7 +636,8 @@ export async function authenticateUser(email: string, password: string): Promise
     if (!isPasswordValid) {
       return {
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid email or password',
+        error: 'INVALID_CREDENTIALS'
       }
     }
 
@@ -375,7 +655,8 @@ export async function authenticateUser(email: string, password: string): Promise
     console.error('Error authenticating user:', error)
     return {
       success: false,
-      message: 'Authentication failed. Please try again.'
+      message: 'Authentication failed. Please try again.',
+      error: 'AUTHENTICATION_ERROR'
     }
   }
 }
@@ -384,13 +665,24 @@ export async function authenticateUser(email: string, password: string): Promise
  * Initialize the main admin user
  * This should be run once to create the main admin
  */
-export async function initializeMainAdmin(): Promise<UserResponse> {
+export async function initializeMainAdmin(
+  context: ActionRequestContext = {}
+): Promise<UserResponse> {
   try {
-    const adminEmail = 'shannon@creatorwealthtools.com'
+    const rateLimit = await enforceAdminRateLimit(context)
+
+    if (!rateLimit.allowed) {
+      return {
+        success: false,
+        message: RATE_LIMIT_MESSAGE,
+        error: RATE_LIMIT_ERROR,
+        retryAfterSeconds: rateLimit.retryAfterSeconds
+      }
+    }
     
     // Check if admin already exists
     const existingAdmin = await prisma.user.findUnique({
-      where: { email: adminEmail }
+      where: { email: MAIN_ADMIN_EMAIL }
     })
 
     if (existingAdmin) {
@@ -400,13 +692,11 @@ export async function initializeMainAdmin(): Promise<UserResponse> {
       }
     }
 
-    // Create a secure default password (should be changed after first login)
-    const defaultPassword = 'CWTAdmin2024!'
-    const hashedPassword = await bcrypt.hash(defaultPassword, 12)
+    const hashedPassword = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 12)
 
     const adminUser = await prisma.user.create({
       data: {
-        email: adminEmail,
+        email: MAIN_ADMIN_EMAIL,
         password: hashedPassword,
         role: 'admin',
         isInvited: false // Main admin is not "invited"
@@ -415,7 +705,7 @@ export async function initializeMainAdmin(): Promise<UserResponse> {
 
     return {
       success: true,
-      message: `Main admin created successfully. Default password: ${defaultPassword}`,
+      message: `Main admin created successfully. Default password: ${DEFAULT_ADMIN_PASSWORD}`,
       user: {
         id: adminUser.id,
         email: adminUser.email,

@@ -4,9 +4,9 @@ import { useEffect, useRef } from 'react';
 import { ErrorAlert } from './google-sheet/ErrorAlert';
 import { ConnectionStatus } from './google-sheet/ConnectionStatus';
 import { ConnectionActions } from './google-sheet/ConnectionActions';
-import { SpreadsheetsList } from './google-sheet/SpreadsheetsList';
+
 import { useGoogleSheets } from '@/hooks/useGoogleSheet';
-import { SheetDataDisplay } from './google-sheet/SheetDataDisplay';
+
 import { toast } from 'sonner';
 
 
@@ -81,20 +81,8 @@ export default function GoogleSheetsButton() {
           }}
         />
 
-        <SpreadsheetsList
-          spreadsheets={spreadsheets}
-          loading={loading}
-          onLoadData={fetchSheetData}
-        />
+      
 
-        {selectedSheet && (
-          <SheetDataDisplay
-            selectedSheet={selectedSheet}
-            spreadsheets={spreadsheets}
-            loading={loading}
-            onSelectSheet={fetchSheetData}
-          />
-        )}
       </div>
     </div>
   );

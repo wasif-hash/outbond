@@ -11,6 +11,12 @@ type RouteContext = {
 const resolveIdParam = (value: string | string[] | undefined): string | null =>
   Array.isArray(value) ? value[0] ?? null : typeof value === "string" ? value : null;
 
+const resolveClientIdentifier = (request: NextRequest): string =>
+  request.ip ||
+  request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+  request.headers.get("x-real-ip") ||
+  "unknown";
+
 export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
     const params = await context.params;
@@ -27,12 +33,34 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
       );
     }
 
-    const result = await deleteUser(id, authResult.user.email);
+    const clientIdentifier = resolveClientIdentifier(request);
+    const result = await deleteUser(
+      id,
+      authResult.user.email,
+      {
+        requesterId: authResult.user.userId,
+        requesterEmail: authResult.user.email,
+        requesterIp: clientIdentifier,
+      }
+    );
     if (!result.success) {
-      return NextResponse.json(
+      const status =
+        result.error === "RATE_LIMIT_EXCEEDED"
+          ? 429
+          : result.error === "USER_NOT_FOUND"
+          ? 404
+          : 400;
+
+      const response = NextResponse.json(
         { error: result.message },
-        { status: result.error === "USER_NOT_FOUND" ? 404 : 400 }
+        { status }
       );
+
+      if (status === 429 && result.retryAfterSeconds) {
+        response.headers.set("Retry-After", String(result.retryAfterSeconds));
+      }
+
+      return response;
     }
 
     return NextResponse.json({ success: true, message: result.message });
@@ -62,13 +90,36 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
 
     const { role } = await request.json();
-    const result = await updateUserRole(id, role, authResult.user.email);
+    const clientIdentifier = resolveClientIdentifier(request);
+    const result = await updateUserRole(
+      id,
+      role,
+      authResult.user.email,
+      {
+        requesterId: authResult.user.userId,
+        requesterEmail: authResult.user.email,
+        requesterIp: clientIdentifier,
+      }
+    );
 
     if (!result.success) {
-      return NextResponse.json(
+      const status =
+        result.error === "RATE_LIMIT_EXCEEDED"
+          ? 429
+          : result.error === "USER_NOT_FOUND"
+          ? 404
+          : 400;
+
+      const response = NextResponse.json(
         { error: result.message },
-        { status: result.error === "USER_NOT_FOUND" ? 404 : 400 }
+        { status }
       );
+
+      if (status === 429 && result.retryAfterSeconds) {
+        response.headers.set("Retry-After", String(result.retryAfterSeconds));
+      }
+
+      return response;
     }
 
     return NextResponse.json({
