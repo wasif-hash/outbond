@@ -7,6 +7,7 @@ import { ArrowDownIcon, ArrowUpIcon, MinusIcon } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { LoaderThree } from "@/components/ui/loader"
 import { getApiClient } from "@/lib/http-client"
+import { useAuth } from "@/hooks/useAuth"
 import type { DashboardAnalyticsResponse, DashboardActivityItem } from "@/types/dashboard"
 
 type TrendDirection = "up" | "down" | "neutral"
@@ -86,6 +87,7 @@ const getActivityAccent = (type: DashboardActivityItem["type"]) => {
 
 export function DashboardClient() {
   const client = useMemo(() => getApiClient(), [])
+  const { isAdmin } = useAuth()
 
   const {
     data: analytics,
@@ -159,7 +161,7 @@ export function DashboardClient() {
   )
 
   const kpiMetrics: KpiMetric[] = useMemo(() => {
-    return [
+    const metrics: KpiMetric[] = [
       {
         key: "leads",
         title: "New Leads",
@@ -194,21 +196,23 @@ export function DashboardClient() {
         description: "Calendar integration pending",
         muted: true,
       },
-      {
+    ]
+
+    if (isAdmin) {
+      metrics.push({
         key: "users",
         title: "Active Users",
-        value: formatNumber(analytics?.metrics.userCount ?? (analytics ? null : 0)),
+        value: formatNumber(analytics?.metrics.userCount ?? (isLoading ? null : 0)),
         trend: "neutral",
-        changeLabel:
-          analytics?.metrics.userCount === null ? "Admin only" : "Synced from Users directory",
-        description:
-          analytics?.metrics.userCount === null
-            ? "Admins can view the user directory"
-            : "Total users with dashboard access",
-      },
-    ]
+        changeLabel: isLoading ? "Loading…" : "Directory synced",
+        description: "Total users with dashboard access",
+      })
+    }
+
+    return metrics
   }, [
     analytics,
+    isAdmin,
     isLoading,
     leadTrendChange.label,
     leadTrendChange.trend,
