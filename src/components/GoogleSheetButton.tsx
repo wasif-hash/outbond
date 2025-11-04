@@ -13,8 +13,6 @@ import { toast } from 'sonner';
 export default function GoogleSheetsButton() {
   const {
     status,
-    spreadsheets,
-    selectedSheet,
     loading,
     error,
     setError,
@@ -22,7 +20,6 @@ export default function GoogleSheetsButton() {
     connectGoogleAccount,
     disconnectGoogleAccount,
     fetchSpreadsheets,
-    fetchSheetData,
   } = useGoogleSheets();
 
   const lastConnectionRef = useRef<boolean | null>(null);
