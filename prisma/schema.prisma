@@ -22,6 +22,7 @@ model User {
   googleTokens  GoogleOAuthToken?
   googleSheets  GoogleSheet[]
   leads         Lead[]
+  emailReplies  EmailReply[]
 
   @@map("users")
 }
@@ -82,6 +83,7 @@ model Campaign {
   campaignJobs    CampaignJob[]
   emailSendJobs   EmailSendJob[]
   leads           Lead[]
+  emailReplies    EmailReply[]
 
   @@index([userId])
   @@index([userId, isActive])
@@ -152,11 +154,46 @@ model Lead {
   summary            String?
   campaign           Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailReplies       EmailReply[]
 
   @@unique([email, campaignId])
   @@index([userId])
   @@index([campaignId])
   @@index([email])
+}
+
+model EmailReply {
+  id                       String             @id @default(cuid())
+  userId                   String
+  emailSendJobId           String?
+  leadId                   String?
+  campaignId               String?
+  gmailMessageId           String?
+  gmailThreadId            String?
+  leadEmail                String
+  subject                  String?
+  snippet                  String?
+  bodyPlain                String?
+  bodyHtml                 String?
+  receivedAt               DateTime           @default(now())
+  disposition              ReplyDisposition   @default(NO_RESPONSE)
+  summary                  String?
+  classificationModel      String?
+  classificationConfidence Float?
+  classifiedAt             DateTime?
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+  user                     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailSendJob             EmailSendJob?      @relation(fields: [emailSendJobId], references: [id], onDelete: SetNull)
+  lead                     Lead?              @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  campaign                 Campaign?          @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, gmailMessageId])
+  @@index([userId, receivedAt])
+  @@index([userId, disposition])
+  @@index([campaignId])
+  @@index([emailSendJobId])
+  @@index([leadId])
 }
 
 model GmailAccount {
@@ -201,6 +238,7 @@ model EmailSendJob {
   campaign             Campaign?       @relation(fields: [campaignId], references: [id])
   gmailAccount         GmailAccount    @relation(fields: [gmailAccountId], references: [id], onDelete: Cascade)
   user                 User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailReplies         EmailReply[]
 
   @@index([userId])
   @@index([campaignId])
@@ -246,4 +284,13 @@ enum JobStatus {
   SUCCEEDED
   FAILED
   CANCELLED
+}
+
+enum ReplyDisposition {
+  NO_RESPONSE
+  POSITIVE
+  NEUTRAL
+  NOT_INTERESTED
+  UNSUB
+  BOUNCED
 }
