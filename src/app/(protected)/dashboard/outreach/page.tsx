@@ -90,7 +90,7 @@ export default function Leads() {
   const [editedSubject, setEditedSubject] = useState("")
   const [editedBody, setEditedBody] = useState("")
 
-  const generateCancelSourceRef = useRef<CancelTokenSource | null>(null)
+  const generateCancelSourceRef = useRef<AbortController | null>(null)
   const sendCancelSourceRef = useRef<CancelTokenSource | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -131,6 +131,15 @@ export default function Leads() {
     fetchSheetData,
   } = useGoogleSheets()
   const jobsLoading = jobsInitialLoading || jobsFetching
+
+  const createAbortController = useCallback((holder: { current: AbortController | null }) => {
+    if (holder.current) {
+      holder.current.abort()
+    }
+    const controller = new AbortController()
+    holder.current = controller
+    return controller
+  }, [])
 
   const createCancelSource = useCallback((holder: { current: CancelTokenSource | null }, reason = 'Cancelled due to a new request') => {
     if (holder.current) {
@@ -320,7 +329,7 @@ export default function Leads() {
         }
         return next
       })
-      generateCancelSourceRef.current?.cancel("Source changed")
+      generateCancelSourceRef.current?.abort()
       setLeads([])
       setDrafts({})
       setChatMessages([])
@@ -380,7 +389,7 @@ export default function Leads() {
 
   useEffect(() => {
     return () => {
-      generateCancelSourceRef.current?.cancel('Component unmounted')
+      generateCancelSourceRef.current?.abort()
       sendCancelSourceRef.current?.cancel('Component unmounted')
     }
   }, [])
@@ -631,22 +640,28 @@ export default function Leads() {
   const handlePromptSubmit = async () => {
     const trimmedPrompt = promptInput.trim()
     if (!leads.length) {
-      setSourceError('Load leads before generating drafts')
+      setSourceError("Load leads before generating drafts")
       setSheetsError(null)
-      toast.error('Load leads first')
+      toast.error("Load leads first")
       return
     }
     if (!trimmedPrompt) {
-      setSourceError('Add a prompt so the AI knows what to write')
-      toast.error('Describe the outreach email you want before generating drafts')
+      setSourceError("Add a prompt so the AI knows what to write")
+      toast.error("Describe the outreach email you want before generating drafts")
       return
     }
     if (leads.length > 50) {
-      const message = 'The outreach generator can handle up to 50 leads per batch. Narrow your range before continuing.'
+      const message = "The outreach generator can handle up to 50 leads per batch. Narrow your range before continuing."
       setSourceError(message)
       toast.error(message)
       return
     }
+
+    type DraftChunk = { email: string; subject: string; bodyHtml: string; bodyText: string }
+    type StreamEvent =
+      | { type: "status"; phase: "working" | "generating" | "finalizing"; total: number; completed: number }
+      | { type: "done"; drafts: DraftChunk[] }
+      | { type: "error"; message: string }
 
     const userMessageId = `user-${Date.now()}`
     const assistantMessageId = `assistant-${Date.now()}`
@@ -660,12 +675,31 @@ export default function Leads() {
     setDrafts({})
     setSourceError(null)
 
-    let cancelSource: CancelTokenSource | null = null
+    const updateAssistant = (content: string, status?: ChatMessage["status"]) => {
+      setChatMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantMessageId ? { ...message, content, ...(status ? { status } : {}) } : message,
+        ),
+      )
+    }
+
+    const phaseMessage = (event: Extract<StreamEvent, { type: "status" }>) => {
+      if (event.phase === "working") {
+        return "Working on your request…"
+      }
+      if (event.phase === "generating") {
+        return `Generating emails (${event.completed}/${event.total})…`
+      }
+      return "Finalizing your drafts…"
+    }
+
+    let controller: AbortController | null = null
     try {
-      cancelSource = createCancelSource(generateCancelSourceRef)
-      const response = await axios.post<{ drafts: Array<{ email: string; subject: string; bodyHtml: string; bodyText: string }> }>(
-        '/api/email/outreach/draft',
-        {
+      controller = createAbortController(generateCancelSourceRef)
+      const response = await fetch("/api/email/outreach/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           leads: leads.map((lead) => ({
             email: lead.email,
             firstName: lead.firstName,
@@ -675,23 +709,81 @@ export default function Leads() {
             role: lead.role,
           })),
           sender: {
-            name: gmailStatus?.emailAddress?.split('@')[0] || undefined,
+            name: gmailStatus?.emailAddress?.split("@")[0] || undefined,
             prompt: trimmedPrompt,
           },
-        },
-        { cancelToken: cancelSource.token },
-      )
+        }),
+        signal: controller.signal,
+      })
 
-      const generated = response.data.drafts ?? []
+      if (!response.ok) {
+        let errorMessage = "Failed to generate outreach drafts"
+        try {
+          const payload = (await response.json()) as { error?: string }
+          if (payload?.error) {
+            errorMessage = payload.error
+          }
+        } catch {
+          // ignore json errors
+        }
+        throw new Error(errorMessage)
+      }
+
+      if (!response.body) {
+        throw new Error("Streaming responses are not supported in this browser.")
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      let streamedDrafts: DraftChunk[] = []
+
+      const processLine = (line: string) => {
+        if (!line) return
+        let event: StreamEvent
+        try {
+          event = JSON.parse(line)
+        } catch {
+          console.warn("Skipping malformed stream chunk:", line)
+          return
+        }
+        if (event.type === "status") {
+          updateAssistant(phaseMessage(event))
+          return
+        }
+        if (event.type === "error") {
+          throw new Error(event.message || "Failed to generate outreach drafts")
+        }
+        if (event.type === "done") {
+          streamedDrafts = Array.isArray(event.drafts) ? event.drafts : []
+        }
+      }
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done })
+          let newlineIndex = buffer.indexOf("\n")
+          while (newlineIndex >= 0) {
+            const line = buffer.slice(0, newlineIndex).trim()
+            buffer = buffer.slice(newlineIndex + 1)
+            processLine(line)
+            newlineIndex = buffer.indexOf("\n")
+          }
+        }
+        if (done) {
+          buffer += decoder.decode()
+          if (buffer.trim()) {
+            processLine(buffer.trim())
+          }
+          break
+        }
+      }
+
+      const generated = streamedDrafts ?? []
       if (!generated.length) {
-        setChatMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessageId
-              ? { ...message, status: "error", content: "I couldn't generate any drafts. Try adjusting your prompt and run it again." }
-              : message,
-          ),
-        )
-        toast.error('No drafts were generated. Try refining your prompt.')
+        updateAssistant("I couldn't generate any drafts. Try adjusting your prompt and run it again.", "error")
+        toast.error("No drafts were generated. Try refining your prompt.")
         return
       }
 
@@ -701,7 +793,7 @@ export default function Leads() {
           subject: item.subject.trim(),
           bodyHtml: item.bodyHtml,
           bodyText: item.bodyText,
-          status: 'pending',
+          status: "pending",
         }
         return acc
       }, {})
@@ -711,39 +803,24 @@ export default function Leads() {
       const missingCount = leads.length - generated.length
       const summary =
         missingCount > 0
-          ? `Generated ${generated.length} drafts. ${missingCount} lead${missingCount === 1 ? '' : 's'} were skipped—check their data and try again if needed.`
+          ? `Generated ${generated.length} drafts. ${missingCount} lead${missingCount === 1 ? "" : "s"} were skipped—check their data and try again if needed.`
           : `Generated drafts for all ${generated.length} leads.`
 
-      setChatMessages((prev) =>
-        prev.map((message) =>
-          message.id === assistantMessageId
-            ? { ...message, status: "success", content: summary }
-            : message,
-        ),
-      )
+      updateAssistant(summary, "success")
       toast.success(`Prepared ${generated.length} drafts`)
     } catch (error) {
-      if (axios.isCancel(error)) {
+      if (error instanceof DOMException && error.name === "AbortError") {
         setChatMessages((prev) => prev.filter((message) => message.id !== assistantMessageId))
         return
       }
 
-      console.error('Draft generation error:', error)
-      const message =
-        axios.isAxiosError(error)
-          ? (error.response?.data as { error?: string })?.error || error.message || 'Failed to generate outreach drafts'
-          : 'Failed to generate outreach drafts'
+      console.error("Draft generation error:", error)
+      const message = error instanceof Error ? error.message : "Failed to generate outreach drafts"
       setSourceError(message)
-      setChatMessages((prev) =>
-        prev.map((chat) =>
-          chat.id === assistantMessageId
-            ? { ...chat, status: "error", content: message }
-            : chat,
-        ),
-      )
+      updateAssistant(message, "error")
       toast.error(message)
     } finally {
-      if (cancelSource && generateCancelSourceRef.current === cancelSource) {
+      if (controller && generateCancelSourceRef.current === controller) {
         generateCancelSourceRef.current = null
       }
       setIsGeneratingFromPrompt(false)
