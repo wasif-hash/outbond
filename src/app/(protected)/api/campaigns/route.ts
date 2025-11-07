@@ -10,6 +10,11 @@ import { generateIdempotencyKey } from '@/lib/utils'
 import { getCampaignsForUser } from '@/lib/apollo/campaigns'
 import { z } from 'zod'
 import { enqueueJob } from '@/lib/queue'
+import {
+  createAuthorizedClient,
+  getSpreadsheetInfo,
+  refreshTokenIfNeeded,
+} from '@/lib/google-sheet/google-sheet'
 
 export const runtime = 'nodejs'
 
@@ -37,7 +42,7 @@ export async function POST(request: NextRequest) {
     const validatedData = createCampaignSchema.parse(body)
 
     // Verify Google Sheet belongs to user
-    const googleSheet = await prisma.googleSheet.findFirst({
+    let googleSheet = await prisma.googleSheet.findFirst({
       where: {
         spreadsheetId: validatedData.googleSheetId,
         userId: authResult.user.userId,
@@ -49,6 +54,52 @@ export async function POST(request: NextRequest) {
         { error: 'Google Sheet not found or not accessible' },
         { status: 404 }
       )
+    }
+
+    if (!googleSheet.sheetTitle || !googleSheet.range) {
+      const tokenRecord = await prisma.googleOAuthToken.findUnique({
+        where: { userId: authResult.user.userId },
+      })
+
+      if (!tokenRecord) {
+        return NextResponse.json(
+          { error: 'Google Sheets token not found. Please reconnect your Google account.' },
+          { status: 400 },
+        )
+      }
+
+      const oauth2Client = await createAuthorizedClient(
+        tokenRecord.accessToken,
+        tokenRecord.refreshToken,
+      )
+
+      if (new Date() >= tokenRecord.expiresAt) {
+        await refreshTokenIfNeeded(oauth2Client, tokenRecord, authResult.user.userId)
+      }
+
+      try {
+        const sheetInfo = await getSpreadsheetInfo(oauth2Client, googleSheet.spreadsheetId)
+        const primarySheet = sheetInfo.sheets?.[0]?.properties
+        const resolvedTitle = primarySheet?.title?.trim() || 'Sheet1'
+        const escapedTitle = resolvedTitle.replace(/'/g, "''")
+        const quotedTitle = `'${escapedTitle}'`
+        const resolvedRange = `${quotedTitle}!A:P`
+
+        googleSheet = await prisma.googleSheet.update({
+          where: { id: googleSheet.id },
+          data: {
+            sheetTitle: resolvedTitle,
+            sheetId: primarySheet?.sheetId ?? null,
+            range: resolvedRange,
+          },
+        })
+      } catch (metadataError) {
+        console.error('Failed to resolve sheet metadata:', metadataError)
+        return NextResponse.json(
+          { error: 'Unable to inspect the selected Google Sheet. Please ensure it exists and you have access.' },
+          { status: 400 },
+        )
+      }
     }
 
     // Prepare campaign data, removing undefined values

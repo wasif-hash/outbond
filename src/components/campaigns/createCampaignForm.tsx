@@ -64,7 +64,6 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
     disconnectGoogleAccount,
     fetchSpreadsheets
   } = useGoogleSheets()
-
   // Check connection status when modal opens
   useEffect(() => {
     if (open) {
@@ -416,21 +415,14 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
                     No spreadsheets found. Create a Google Sheet first or click the Fetch Spreadsheets button above.
                   </div>
                 ) : (
-                  <Select 
-                    value={formData.googleSheetId} 
-                    onValueChange={(value) => handleInputChange('googleSheetId', value)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a Google Sheet" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {spreadsheets.map((sheet) => (
-                        <SelectItem key={sheet.id} value={sheet.id}>
-                          {sheet.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SheetSelector
+                    sheets={spreadsheets}
+                    value={formData.googleSheetId}
+                    onChange={(value) => handleInputChange('googleSheetId', value)}
+                    disabled={spreadsheets.length === 0}
+                    loading={loading}
+                    emptyMessage="No sheets match your search."
+                  />
                 )}
                 
                 {selectedSheet && (

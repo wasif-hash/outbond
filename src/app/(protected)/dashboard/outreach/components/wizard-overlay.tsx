@@ -1,12 +1,12 @@
 "use client"
 
-import type { ChangeEvent, RefObject } from "react"
+import { type ChangeEvent, type RefObject, useEffect, useMemo, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { SheetSelector } from "@/components/google-sheet/SheetSelector"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -194,6 +194,7 @@ function StepOneContent({
   onNext,
   onCancel,
 }: StepOneProps) {
+
   return (
     <div className="space-y-6">
       <div className="space-y-2">
@@ -239,34 +240,15 @@ function StepOneContent({
           <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">Google Sheet</label>
-              <Select
+              <SheetSelector
+                sheets={spreadsheets}
                 value={selectedSheetId}
-                onValueChange={(value) => onSelectedSheetIdChange(value)}
-                onOpenChange={onSheetSelectOpen}
+                onChange={onSelectedSheetIdChange}
                 disabled={spreadsheets.length === 0 && sheetsLoading}
-              >
-                <SelectTrigger className="w-full justify-between">
-                  <SelectValue
-                    placeholder={
-                      spreadsheets.length ? "Select sheet" : sheetsLoading ? "Loading sheets…" : "No sheets saved"
-                    }
-                  />
-                  {sheetsLoading ? <FastSpinner size="sm" /> : null}
-                </SelectTrigger>
-                <SelectContent
-                  position="popper"
-                  className="z-[200] max-h-60 min-w-[var(--radix-select-trigger-width)] overflow-auto"
-                >
-                  {spreadsheets.length === 0 && !sheetsLoading ? (
-                    <div className="px-3 py-2 text-sm text-muted-foreground">No saved sheets yet.</div>
-                  ) : null}
-                  {spreadsheets.map((sheet) => (
-                    <SelectItem key={sheet.id} value={sheet.id}>
-                      {sheet.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                loading={sheetsLoading}
+                emptyMessage="No sheets match your search."
+                onOpenChange={onSheetSelectOpen}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">Range</label>
