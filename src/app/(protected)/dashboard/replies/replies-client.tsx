@@ -3,36 +3,36 @@
 import { useMemo, useState } from "react"
 import { MessageSquare } from "lucide-react"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import type { ReplyRecord } from "@/lib/replies/types"
 
-type ReplyDisposition = "positive" | "neutral" | "not interested" | "unsub" | "bounced"
-
-export type ReplyRecord = {
-  id: number
-  lead: string
-  company: string
-  campaign: string
-  disposition: ReplyDisposition
-  snippet: string
-  timestamp: string
-  fullReply: string
-}
+type ReplyDisposition = ReplyRecord["disposition"]
 
 type RepliesClientProps = {
   replies: ReplyRecord[]
 }
 
 const FILTER_DEFINITIONS: Array<{ label: string; value: "all" | ReplyDisposition }> = [
-  { label: "All", value: "all" },
+  { label: "No Response", value: "no response" },
   { label: "Positive", value: "positive" },
   { label: "Neutral", value: "neutral" },
   { label: "Not Interested", value: "not interested" },
   { label: "Unsub", value: "unsub" },
   { label: "Bounced", value: "bounced" },
+  { label: "All", value: "all" },
 ]
+
+const EMPTY_COUNTS: Record<ReplyDisposition, number> = {
+  "no response": 0,
+  positive: 0,
+  neutral: 0,
+  "not interested": 0,
+  unsub: 0,
+  bounced: 0,
+}
 
 const badgeVariant = (disposition: ReplyDisposition) => {
   switch (disposition) {
@@ -44,29 +44,60 @@ const badgeVariant = (disposition: ReplyDisposition) => {
       return "negative"
     case "unsub":
       return "unsub"
+    case "bounced":
+      return "bounce"
+    case "no response":
+      return "secondary"
     default:
       return "secondary"
   }
 }
 
+const displayDisposition = (value: ReplyDisposition) => {
+  if (value === "no response") {
+    return "No Response"
+  }
+  if (value === "not interested") {
+    return "Not Interested"
+  }
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+const timestampFormatter = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+})
+
+const formatTimestamp = (iso: string) => timestampFormatter.format(new Date(iso))
+
+const formatConfidence = (confidence: number | null) =>
+  typeof confidence === "number" ? `${Math.round(confidence * 100)}%` : "—"
+
+const summariseModel = (model: string | null) => {
+  if (!model) return "—"
+  if (model.includes(":")) {
+    return model.split(":")[1]
+  }
+  return model
+}
+
+const summariseSource = (source: string | null) => {
+  if (!source) return "—"
+  return source.replace(/\b\w/g, (match) => match.toUpperCase())
+}
+
 export function RepliesClient({ replies }: RepliesClientProps) {
-  const [selectedFilter, setSelectedFilter] = useState<"all" | ReplyDisposition>("all")
+  const [selectedFilter, setSelectedFilter] = useState<"all" | ReplyDisposition>("no response")
   const [selectedReply, setSelectedReply] = useState<ReplyRecord | null>(null)
 
   const counts = useMemo(() => {
-    return replies.reduce<Record<ReplyDisposition, number>>(
-      (acc, reply) => {
-        acc[reply.disposition] += 1
-        return acc
-      },
-      {
-        positive: 0,
-        neutral: 0,
-        "not interested": 0,
-        unsub: 0,
-        bounced: 0,
-      },
-    )
+    return replies.reduce<Record<ReplyDisposition, number>>((acc, reply) => {
+      acc[reply.disposition] += 1
+      return acc
+    }, { ...EMPTY_COUNTS })
   }, [replies])
 
   const filteredReplies = useMemo(() => {
@@ -78,7 +109,9 @@ export function RepliesClient({ replies }: RepliesClientProps) {
     <div className="p-6">
       <div className="mb-6">
         <h1 className="text-3xl font-mono font-bold text-foreground">Replies</h1>
-        <p className="text-muted-text mt-1">Monitor and categorise inbound email responses</p>
+        <p className="text-muted-text mt-1">
+          Monitor inbound replies and review AI triage across your campaigns.
+        </p>
       </div>
 
       <div className="flex flex-wrap gap-2 mb-6">
@@ -105,7 +138,7 @@ export function RepliesClient({ replies }: RepliesClientProps) {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg font-mono">
-            {selectedFilter === "all" ? "All Replies" : `${selectedFilter.charAt(0).toUpperCase() + selectedFilter.slice(1)} Replies`}
+            {selectedFilter === "all" ? "All Replies" : `${displayDisposition(selectedFilter)} Replies`}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -118,7 +151,7 @@ export function RepliesClient({ replies }: RepliesClientProps) {
                   <th className="py-3 text-left font-mono text-sm font-bold">Campaign</th>
                   <th className="py-3 text-left font-mono text-sm font-bold">Disposition</th>
                   <th className="py-3 text-left font-mono text-sm font-bold">Snippet</th>
-                  <th className="py-3 text-left font-mono text-sm font-bold">Timestamp</th>
+                  <th className="py-3 text-left font-mono text-sm font-bold">Received</th>
                   <th className="w-10" />
                 </tr>
               </thead>
@@ -130,13 +163,17 @@ export function RepliesClient({ replies }: RepliesClientProps) {
                     onClick={() => setSelectedReply(reply)}
                   >
                     <td className="py-3 font-medium">{reply.lead}</td>
-                    <td className="py-3 text-muted-text">{reply.company}</td>
-                    <td className="py-3">{reply.campaign}</td>
+                    <td className="py-3 text-muted-text">{reply.company ?? "—"}</td>
+                    <td className="py-3">{reply.campaign ?? "—"}</td>
                     <td className="py-3">
-                      <Badge variant={badgeVariant(reply.disposition)}>{reply.disposition}</Badge>
+                      <Badge variant={badgeVariant(reply.disposition)}>
+                        {displayDisposition(reply.disposition)}
+                      </Badge>
                     </td>
                     <td className="py-3 max-w-xs truncate text-muted-text">{reply.snippet}</td>
-                    <td className="py-3 font-mono text-sm text-muted-text">{reply.timestamp}</td>
+                    <td className="py-3 font-mono text-sm text-muted-text">
+                      {formatTimestamp(reply.receivedAt)}
+                    </td>
                     <td className="py-3">
                       <MessageSquare className="h-4 w-4 text-muted-text" />
                     </td>
@@ -147,42 +184,91 @@ export function RepliesClient({ replies }: RepliesClientProps) {
           </div>
 
           {filteredReplies.length === 0 && (
-            <div className="py-12 text-center text-muted-text">No replies found for the selected filter.</div>
+            <div className="py-12 text-center text-muted-text">
+              No replies found for the selected filter.
+            </div>
           )}
         </CardContent>
       </Card>
 
-      <Sheet open={!!selectedReply} onOpenChange={() => setSelectedReply(null)}>
+      <Sheet
+        open={!!selectedReply}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedReply(null)
+          }
+        }}
+      >
         <SheetContent className="w-[400px] sm:w-[540px]">
           <SheetHeader>
-            <SheetTitle className="font-mono">Reply from {selectedReply?.lead}</SheetTitle>
+            <SheetTitle className="font-mono">
+              Reply from {selectedReply?.lead ?? "Lead"}
+            </SheetTitle>
           </SheetHeader>
 
           {selectedReply && (
             <div className="mt-6 space-y-6">
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
+                  <div className="text-muted-text font-medium">Email</div>
+                  <div className="font-mono text-xs">{selectedReply.leadEmail}</div>
+                </div>
+                <div>
                   <div className="text-muted-text font-medium">Company</div>
-                  <div>{selectedReply.company}</div>
+                  <div>{selectedReply.company ?? "—"}</div>
                 </div>
                 <div>
                   <div className="text-muted-text font-medium">Campaign</div>
-                  <div>{selectedReply.campaign}</div>
+                  <div>{selectedReply.campaign ?? "—"}</div>
                 </div>
                 <div>
-                  <div className="text-muted-text font-medium">Timestamp</div>
-                  <div className="font-mono">{selectedReply.timestamp}</div>
+                  <div className="text-muted-text font-medium">Received</div>
+                  <div className="font-mono text-xs">
+                    {formatTimestamp(selectedReply.receivedAt)}
+                  </div>
                 </div>
                 <div>
                   <div className="text-muted-text font-medium">Disposition</div>
-                  <Badge variant={badgeVariant(selectedReply.disposition)}>{selectedReply.disposition}</Badge>
+                  <Badge variant={badgeVariant(selectedReply.disposition)}>
+                    {displayDisposition(selectedReply.disposition)}
+                  </Badge>
+                </div>
+                <div>
+                  <div className="text-muted-text font-medium">Confidence</div>
+                  <div>{formatConfidence(selectedReply.confidence)}</div>
+                </div>
+                <div>
+                  <div className="text-muted-text font-medium">Classifier</div>
+                  <div>{summariseModel(selectedReply.classificationModel)}</div>
+                </div>
+                <div>
+                  <div className="text-muted-text font-medium">Source</div>
+                  <div>{summariseSource(selectedReply.classificationSource)}</div>
                 </div>
               </div>
+
+              {selectedReply.subject && (
+                <div>
+                  <div className="text-muted-text font-medium">Subject</div>
+                  <div className="font-mono text-sm">{selectedReply.subject}</div>
+                </div>
+              )}
+
+              {selectedReply.summary && (
+                <div>
+                  <h4 className="mb-2 text-sm font-semibold tracking-wide text-muted-text">
+                    AI Summary
+                  </h4>
+                  <p className="text-sm leading-relaxed">{selectedReply.summary}</p>
+                </div>
+              )}
 
               <div>
                 <h4 className="mb-3 font-mono font-bold">Full Reply</h4>
                 <div className="rounded-lg border-l-4 border-cwt-plum bg-muted/40 p-4">
-                  <pre className="whitespace-pre-wrap text-sm leading-relaxed">{selectedReply.fullReply}</pre>
+                  <pre className="whitespace-pre-wrap text-sm leading-relaxed">
+                    {selectedReply.fullReply || "No message content available."}
+                  </pre>
                 </div>
               </div>
             </div>
