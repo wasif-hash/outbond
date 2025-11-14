@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { enqueueEmailSendJob } from '@/lib/queue'
 import { formatEmailBody } from '@/lib/email/format'
 import type { ManualOutreachSource } from '@/types/outreach'
+import { ensureCors } from '@/lib/http/cors'
 
 const MAX_JOBS_PER_REQUEST = 200
 
@@ -28,10 +29,20 @@ interface SendJobInput {
   manualCampaignSource?: ManualOutreachSource | null
 }
 
+export async function OPTIONS(request: NextRequest) {
+  const cors = await ensureCors(request)
+  return cors.respond(null, { status: cors.statusCode })
+}
+
 export async function POST(request: NextRequest) {
+  const cors = await ensureCors(request)
+  if (cors.isPreflight) {
+    return cors.respond()
+  }
+
   const authResult = await verifyAuth(request)
   if (!authResult.success || !authResult.user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return cors.apply(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
   }
 
   const payload = await request.json().catch(() => null) as {
@@ -39,22 +50,26 @@ export async function POST(request: NextRequest) {
   } | null
 
   if (!payload || !Array.isArray(payload.jobs) || payload.jobs.length === 0) {
-    return NextResponse.json({ error: 'No email jobs supplied' }, { status: 400 })
+    return cors.apply(NextResponse.json({ error: 'No email jobs supplied' }, { status: 400 }))
   }
 
   if (payload.jobs.length > MAX_JOBS_PER_REQUEST) {
-    return NextResponse.json({ error: `Too many jobs; maximum ${MAX_JOBS_PER_REQUEST}` }, { status: 400 })
+    return cors.apply(NextResponse.json({ error: `Too many jobs; maximum ${MAX_JOBS_PER_REQUEST}` }, { status: 400 }))
   }
 
   const gmailAccount = await prisma.gmailAccount.findUnique({ where: { userId: authResult.user.userId } })
   if (!gmailAccount) {
-    return NextResponse.json({ error: 'Gmail account not connected', requiresReauth: true }, { status: 409 })
+    return cors.apply(
+      NextResponse.json({ error: 'Gmail account not connected', requiresReauth: true }, { status: 409 }),
+    )
   }
 
   if (!gmailAccount.accessToken || !gmailAccount.refreshToken) {
-    return NextResponse.json(
-      { error: 'Gmail account needs to be reconnected before sending emails.', requiresReauth: true },
-      { status: 409 }
+    return cors.apply(
+      NextResponse.json(
+        { error: 'Gmail account needs to be reconnected before sending emails.', requiresReauth: true },
+        { status: 409 }
+      )
     )
   }
 
@@ -78,7 +93,7 @@ export async function POST(request: NextRequest) {
     })
 
   if (sanitizedJobs.length === 0) {
-    return NextResponse.json({ error: 'No valid email jobs supplied' }, { status: 400 })
+    return cors.apply(NextResponse.json({ error: 'No valid email jobs supplied' }, { status: 400 }))
   }
 
   const createdJobs: string[] = []
@@ -119,9 +134,11 @@ export async function POST(request: NextRequest) {
     ),
   )
 
-  return NextResponse.json({
-    success: true,
-    queued: createdJobs.length,
-    jobIds: createdJobs,
-  })
+  return cors.apply(
+    NextResponse.json({
+      success: true,
+      queued: createdJobs.length,
+      jobIds: createdJobs,
+    }),
+  )
 }

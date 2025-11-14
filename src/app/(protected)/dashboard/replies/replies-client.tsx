@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from "react"
 import { MessageSquare } from "lucide-react"
-
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { cn } from "@/lib/utils"
 import type { ReplyRecord } from "@/lib/replies/types"
 
 type ReplyDisposition = ReplyRecord["disposition"]
@@ -16,13 +16,13 @@ type RepliesClientProps = {
 }
 
 const FILTER_DEFINITIONS: Array<{ label: string; value: "all" | ReplyDisposition }> = [
+  { label: "All", value: "all" },
   { label: "No Response", value: "no response" },
   { label: "Positive", value: "positive" },
   { label: "Neutral", value: "neutral" },
   { label: "Not Interested", value: "not interested" },
   { label: "Unsub", value: "unsub" },
   { label: "Bounced", value: "bounced" },
-  { label: "All", value: "all" },
 ]
 
 const EMPTY_COUNTS: Record<ReplyDisposition, number> = {
@@ -89,8 +89,13 @@ const summariseSource = (source: string | null) => {
   return source.replace(/\b\w/g, (match) => match.toUpperCase())
 }
 
+const getReplyPreview = (reply: ReplyRecord) => {
+  const base = (reply.fullReply || reply.snippet || "").replace(/\s+/g, " ").trim()
+  return base
+}
+
 export function RepliesClient({ replies }: RepliesClientProps) {
-  const [selectedFilter, setSelectedFilter] = useState<"all" | ReplyDisposition>("no response")
+  const [selectedFilter, setSelectedFilter] = useState<"all" | ReplyDisposition>("all")
   const [selectedReply, setSelectedReply] = useState<ReplyRecord | null>(null)
 
   const counts = useMemo(() => {
@@ -114,18 +119,17 @@ export function RepliesClient({ replies }: RepliesClientProps) {
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-2 mb-6">
+      <div className="mb-6 flex flex-wrap gap-2">
         {FILTER_DEFINITIONS.map((filter) => (
           <Button
             key={filter.value}
-            variant="outline"
+            variant={selectedFilter === filter.value ? "default" : "outline"}
             size="sm"
             onClick={() => setSelectedFilter(filter.value)}
-            className={`h-8 ${
-              selectedFilter === filter.value
-                ? "border-cwt-plum bg-cwt-plum text-white hover:bg-cwt-plum/90"
-                : ""
-            }`}
+            className={cn(
+              "h-8 transition-colors",
+              selectedFilter === filter.value ? "" : "text-muted-foreground"
+            )}
           >
             {filter.label}
             <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-xs">
@@ -142,15 +146,15 @@ export function RepliesClient({ replies }: RepliesClientProps) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
+          <div className="hidden overflow-x-auto rounded-lg border border-border md:block">
+            <table className="w-full table-fixed">
+              <thead >
                 <tr className="border-b border-border">
-                  <th className="py-3 text-left font-mono text-sm font-bold">Lead</th>
-                  <th className="py-3 text-left font-mono text-sm font-bold">Company</th>
-                  <th className="py-3 text-left font-mono text-sm font-bold">Campaign</th>
+                  <th className="w-48 py-3 text-left font-mono text-sm font-bold ">Lead</th>
+                  <th className="hidden py-3 text-left font-mono text-sm font-bold lg:table-cell">Company</th>
+                  <th className="hidden py-3 text-left font-mono text-sm font-bold lg:table-cell">Campaign</th>
                   <th className="py-3 text-left font-mono text-sm font-bold">Disposition</th>
-                  <th className="py-3 text-left font-mono text-sm font-bold">Snippet</th>
+                  <th className="py-3 text-left font-mono text-sm font-bold">Reply</th>
                   <th className="py-3 text-left font-mono text-sm font-bold">Received</th>
                   <th className="w-10" />
                 </tr>
@@ -163,14 +167,18 @@ export function RepliesClient({ replies }: RepliesClientProps) {
                     onClick={() => setSelectedReply(reply)}
                   >
                     <td className="py-3 font-medium">{reply.lead}</td>
-                    <td className="py-3 text-muted-text">{reply.company ?? "—"}</td>
-                    <td className="py-3">{reply.campaign ?? "—"}</td>
+                    <td className="hidden py-3 text-muted-text lg:table-cell">{reply.company ?? "—"}</td>
+                    <td className="hidden py-3 lg:table-cell">{reply.campaign ?? "—"}</td>
                     <td className="py-3">
                       <Badge variant={badgeVariant(reply.disposition)}>
                         {displayDisposition(reply.disposition)}
                       </Badge>
                     </td>
-                    <td className="py-3 max-w-xs truncate text-muted-text">{reply.snippet}</td>
+                    <td className="py-3">
+                      <p className="line-clamp-2 text-sm text-muted-foreground" title={getReplyPreview(reply)}>
+                        {getReplyPreview(reply)}
+                      </p>
+                    </td>
                     <td className="py-3 font-mono text-sm text-muted-text">
                       {formatTimestamp(reply.receivedAt)}
                     </td>
@@ -181,6 +189,34 @@ export function RepliesClient({ replies }: RepliesClientProps) {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          <div className="space-y-3 md:hidden">
+            {filteredReplies.map((reply) => (
+              <button
+                key={reply.id}
+                type="button"
+                className="w-full rounded-xl border border-border bg-card p-4 text-left shadow-sm transition-colors hover:bg-muted/60"
+                onClick={() => setSelectedReply(reply)}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="font-semibold text-foreground">{reply.lead}</p>
+                    <p className="text-xs text-muted-foreground">{reply.leadEmail}</p>
+                  </div>
+                  <Badge variant={badgeVariant(reply.disposition)}>
+                    {displayDisposition(reply.disposition)}
+                  </Badge>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground" title={getReplyPreview(reply)}>
+                  {getReplyPreview(reply)}
+                </p>
+                <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{reply.campaign ?? "—"}</span>
+                  <span className="font-mono">{formatTimestamp(reply.receivedAt)}</span>
+                </div>
+              </button>
+            ))}
           </div>
 
           {filteredReplies.length === 0 && (
@@ -199,7 +235,7 @@ export function RepliesClient({ replies }: RepliesClientProps) {
           }
         }}
       >
-        <SheetContent className="w-[400px] sm:w-[540px]">
+        <SheetContent className="w-full sm:max-w-[540px]">
           <SheetHeader>
             <SheetTitle className="font-mono">
               Reply from {selectedReply?.lead ?? "Lead"}
@@ -251,15 +287,6 @@ export function RepliesClient({ replies }: RepliesClientProps) {
                 <div>
                   <div className="text-muted-text font-medium">Subject</div>
                   <div className="font-mono text-sm">{selectedReply.subject}</div>
-                </div>
-              )}
-
-              {selectedReply.summary && (
-                <div>
-                  <h4 className="mb-2 text-sm font-semibold tracking-wide text-muted-text">
-                    AI Summary
-                  </h4>
-                  <p className="text-sm leading-relaxed">{selectedReply.summary}</p>
                 </div>
               )}
 

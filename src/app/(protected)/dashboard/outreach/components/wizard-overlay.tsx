@@ -1,6 +1,6 @@
 "use client"
 
-import { type ChangeEvent, type RefObject } from "react"
+import { type ChangeEvent, type RefObject, useEffect, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -17,7 +17,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Eye, Send, UploadCloud } from "lucide-react"
+import { BookmarkPlus, Eye, PenLine, Save, Send, Upload, UploadCloud } from "lucide-react"
+import type { LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { FastSpinner } from "./FastSpinner"
 import type { DraftRecord, OutreachMode, SheetLead } from "@/types/outreach"
@@ -26,11 +27,90 @@ import type { GoogleSpreadsheet } from "@/types/google-sheet"
 import type { ChatMessage, OutreachSourceType, WizardStep } from "./types"
 import { OverlayPanel } from "./overlay-panel"
 import { statusVariant } from "@/lib/leads/outreach"
+import type { SavedSnippet } from "@/types/saved-snippet"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
 type SourceOption = {
   value: OutreachSourceType
   label: string
   description: string
+}
+
+const deriveSnippetName = (content: string) => {
+  const firstLine = content.split("\n").find((line) => line.trim().length > 0) ?? "Prompt"
+  return firstLine.slice(0, 60)
+}
+
+const stripHtml = (html: string) => html.replace(/<[^>]+>/g, " ")
+
+type SavedSnippetSelectorProps = {
+  icon: LucideIcon
+  label: string
+  items: SavedSnippet[]
+  emptyLabel: string
+  onSelect: (snippet: SavedSnippet) => void
+}
+
+function SavedSnippetSelector({ icon: Icon, label, items, emptyLabel, onSelect }: SavedSnippetSelectorProps) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (event: MouseEvent) => {
+      if (!containerRef.current) return
+      if (!containerRef.current.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handleClick)
+    return () => document.removeEventListener("mousedown", handleClick)
+  }, [open])
+
+  const handleSelect = (snippet: SavedSnippet) => {
+    onSelect(snippet)
+    setOpen(false)
+  }
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className={cn(
+          "h-9 w-9 rounded-full border border-border bg-background/95 text-foreground shadow-sm",
+          open ? "bg-primary/15 text-primary" : "",
+        )}
+        onClick={() => setOpen((prev) => !prev)}
+        title={label}
+      >
+        <Icon className="h-4 w-4" />
+      </Button>
+      {open ? (
+        <div className="absolute right-0 top-12 z-50 w-56 rounded-md border border-border bg-popover shadow-lg">
+          <div className="border-b px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">{label}</div>
+          {items.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">{emptyLabel}</p>
+          ) : (
+            <ul className="max-h-60 overflow-auto py-1">
+              {items.map((snippet) => (
+                <li key={snippet.id}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
+                    onClick={() => handleSelect(snippet)}
+                  >
+                    {snippet.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 export type StepOneProps = {
@@ -68,6 +148,9 @@ export type StepTwoProps = {
   onPromptSubmit: () => void
   isGeneratingFromPrompt: boolean
   hasDrafts: boolean
+  savedPrompts: SavedSnippet[]
+  savedSignatures: SavedSnippet[]
+  onSavePromptSnippet: (payload: { name: string; content: string }) => Promise<void>
   onPrevious: () => void
   onNext: () => void
 }
@@ -90,6 +173,9 @@ export type StepThreeProps = {
   confirmBulkSend: () => void
   onPreviewDraft: (email: string) => void
   isGeneratingFromPrompt: boolean
+  onSaveDraftCampaign: () => void
+  savingDraftCampaign: boolean
+  canSaveDraftCampaign: boolean
   onBack: () => void
   onClose: () => void
 }
@@ -331,9 +417,57 @@ function StepTwoContent({
   onPromptSubmit,
   isGeneratingFromPrompt,
   hasDrafts,
+  savedPrompts,
+  savedSignatures,
+  onSavePromptSnippet,
   onPrevious,
   onNext,
 }: StepTwoProps) {
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false)
+  const [saveSnippetName, setSaveSnippetName] = useState("")
+  const [saveSnippetContent, setSaveSnippetContent] = useState("")
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [savingSnippet, setSavingSnippet] = useState(false)
+
+  const openSaveDialog = (content: string) => {
+    setSaveSnippetContent(content)
+    setSaveSnippetName(deriveSnippetName(content))
+    setSaveError(null)
+    setSaveDialogOpen(true)
+  }
+
+  const handleConfirmSave = async () => {
+    const trimmedName = saveSnippetName.trim()
+    if (!trimmedName) {
+      setSaveError("Give this prompt a name before saving.")
+      return
+    }
+    setSaveError(null)
+    setSavingSnippet(true)
+    try {
+      await onSavePromptSnippet({ name: trimmedName, content: saveSnippetContent })
+      setSaveDialogOpen(false)
+      setSaveSnippetName("")
+      setSaveSnippetContent("")
+    } catch (error) {
+      console.error("Prompt save failed:", error)
+      setSaveError("We couldn't save this prompt. Try again.")
+    } finally {
+      setSavingSnippet(false)
+    }
+  }
+
+  const insertPrompt = (snippet: SavedSnippet) => {
+    onPromptInputChange(snippet.content)
+  }
+
+  const insertSignature = (snippet: SavedSnippet) => {
+    const signatureText = stripHtml(snippet.content).trim()
+    const base = promptInput.trim().length ? `${promptInput.trim()}\n\nSignature:\n${signatureText}` : signatureText
+    onPromptInputChange(base)
+  }
+
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
@@ -353,9 +487,16 @@ function StepTwoContent({
           </div>
         ) : (
           <div className="flex max-h-72 flex-col gap-4 overflow-y-auto">
-            {chatMessages.map((message) => (
-              <ChatBubble key={message.id} message={message} />
-            ))}
+            {chatMessages.map((message) => {
+              const canSave = message.role === "user" && Boolean(message.content?.trim())
+              return (
+                <ChatBubble
+                  key={message.id}
+                  message={message}
+                  onSave={canSave ? () => openSaveDialog(message.content) : undefined}
+                />
+              )
+            })}
           </div>
         )}
       </div>
@@ -367,17 +508,32 @@ function StepTwoContent({
           onPromptSubmit()
         }}
       >
-        <Textarea
-          value={promptInput}
-          onChange={(event) => onPromptInputChange(event.target.value)}
-          placeholder="Example: Reference their Series B, mention how we halve onboarding time, and close with a discovery call offer."
-          rows={4}
-        />
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-muted-foreground">
-            Mention tone, proof points, objections to overcome, and the closing CTA you expect.
-          </p>
-          <Button type="submit" disabled={isGeneratingFromPrompt}>
+        <div className="flex flex-col gap-3 md:flex-row md:items-stretch">
+          <div className="relative flex-1">
+            <Input
+              value={promptInput}
+              onChange={(event) => onPromptInputChange(event.target.value)}
+              placeholder="Example: Reference their Series B, mention how we halve onboarding time"
+              className="h-14 rounded-2xl border border-input bg-background pr-32 text-base font-medium"
+            />
+            <div className="absolute right-3 top-1/2 flex -translate-y-1/2 gap-2">
+              <SavedSnippetSelector
+                icon={Upload}
+                label="Prompts"
+                items={savedPrompts}
+                emptyLabel="No prompts saved"
+                onSelect={insertPrompt}
+              />
+              <SavedSnippetSelector
+                icon={PenLine}
+                label="Signatures"
+                items={savedSignatures}
+                emptyLabel="No signatures saved"
+                onSelect={insertSignature}
+              />
+            </div>
+          </div>
+          <Button type="submit" disabled={isGeneratingFromPrompt} className="h-14 w-full rounded-2xl md:w-56">
             {isGeneratingFromPrompt ? (
               <>
                 <FastSpinner size="sm" className="mr-2" />
@@ -388,6 +544,9 @@ function StepTwoContent({
             )}
           </Button>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Mention tone, proof points, objections, and CTA. Use the icons to load saved prompts or signatures.
+        </p>
       </form>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -398,6 +557,32 @@ function StepTwoContent({
           Next
         </Button>
       </div>
+
+      <Dialog open={saveDialogOpen} onOpenChange={(open) => (!savingSnippet ? setSaveDialogOpen(open) : null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save this prompt</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input
+              placeholder="Prompt name"
+              value={saveSnippetName}
+              onChange={(event) => setSaveSnippetName(event.target.value)}
+            />
+            <Textarea value={saveSnippetContent} readOnly rows={6} className="text-sm" />
+            {saveError ? <p className="text-sm text-destructive">{saveError}</p> : null}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setSaveDialogOpen(false)} disabled={savingSnippet}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleConfirmSave} disabled={savingSnippet}>
+              {savingSnippet ? <FastSpinner size="sm" className="mr-2" /> : null}
+              Save prompt
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -420,6 +605,9 @@ function StepThreeContent({
   confirmBulkSend,
   isGeneratingFromPrompt,
   onPreviewDraft,
+  onSaveDraftCampaign,
+  savingDraftCampaign,
+  canSaveDraftCampaign,
   onBack,
   onClose,
 }: StepThreeProps) {
@@ -434,6 +622,25 @@ function StepThreeContent({
       <p className="text-sm text-muted-foreground">
         Preview every message before delivery. Switch between single send or a bulk blast when you’re ready.
       </p>
+
+      <div className="rounded-lg border border-dashed border-border bg-muted/30 p-4 sm:flex sm:items-center sm:justify-between">
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-foreground">Save this campaign as a draft</p>
+          <p className="text-xs text-muted-foreground">
+            We’ll store your prompt, leads, and generated drafts so you can resume later.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="mt-3 w-full sm:mt-0 sm:w-auto"
+          disabled={!canSaveDraftCampaign || savingDraftCampaign}
+          onClick={onSaveDraftCampaign}
+        >
+          {savingDraftCampaign ? <FastSpinner size="sm" className="mr-2" /> : <Save className="mr-2 h-4 w-4" />}
+          Save draft campaign
+        </Button>
+      </div>
 
       <div className="overflow-x-auto rounded-lg border border-border">
         {hasDrafts ? (
@@ -603,7 +810,7 @@ function StepThreeContent({
   )
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({ message, onSave }: { message: ChatMessage; onSave?: () => void }) {
   const isUser = message.role === "user"
   const isError = message.status === "error"
   const bubbleClass = cn(
@@ -613,7 +820,17 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   )
 
   return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+    <div className={cn("flex items-start gap-2", isUser ? "justify-end" : "justify-start")}>
+      {isUser && onSave ? (
+        <button
+          type="button"
+          className="mt-1 rounded-full border border-border bg-background/90 p-1 text-muted-foreground transition hover:text-foreground"
+          onClick={onSave}
+          title="Save this prompt"
+        >
+          <BookmarkPlus className="h-4 w-4" />
+        </button>
+      ) : null}
       <div
         className={bubbleClass}
         style={isUser && !isError ? { backgroundColor: "hsl(var(--cwt-plum))" } : undefined}

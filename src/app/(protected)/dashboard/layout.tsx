@@ -18,6 +18,7 @@ import {
   X,
   LogOut,
   Lock,
+  Bookmark,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -49,6 +50,7 @@ const navigation: NavItem[] = [
   { name: "Leads", href: "/dashboard/leads", icon: Send },
   { name: "Replies", href: "/dashboard/replies", icon: MessageSquare },
   { name: "Bookings", href: "/dashboard/bookings", icon: Calendar },
+  { name: "Saved", href: "/dashboard/saved", icon: Bookmark },
   { name: "Users", href: "/dashboard/users", icon: User, requiresAdmin: true },
   { name: "Integrations", href: "/dashboard/settings", icon: Settings },
 ]

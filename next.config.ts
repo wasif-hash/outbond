@@ -1,3 +1,4 @@
+import "./scripts/zlib-shim"
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {

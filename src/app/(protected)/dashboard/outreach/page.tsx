@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useGoogleSheets } from "@/hooks/useGoogleSheet"
+import { useSavedSnippets } from "@/hooks/useSavedSnippets"
 import { useGmail } from "@/hooks/useGmail"
 import {
   DraftRecord,
@@ -27,7 +28,9 @@ import type { StepOneProps, StepTwoProps, StepThreeProps, WizardOverlayProps } f
 import { SentEmailPanel } from "./components/sent-email-panel"
 import { SentCampaignPanel } from "./components/sent-campaign-panel"
 import { OutreachHistory } from "./components/outreach-history"
-import type { ChatMessage, ManualCampaignGroup, OutreachSourceType, PersistedWorkflowState, WizardStep } from "./components/types"
+import type { ChatMessage, ManualCampaignGroup, OutreachSourceType, WizardStep } from "./components/types"
+import type { ManualCampaignDraft, ManualCampaignDraftStatus, PersistedWorkflowState } from "@/types/outreach-workflow"
+import type { SavedSnippet } from "@/types/saved-snippet"
 
 const SOURCE_OPTIONS: Array<{ value: OutreachSourceType; label: string; description: string }> = [
   {
@@ -82,6 +85,8 @@ export default function Leads() {
   const [sourceError, setSourceError] = useState<string | null>(null)
   const [uploadedFileMeta, setUploadedFileMeta] = useState<{ name: string; importedAt: number; rowCount: number } | null>(null)
   const [resumeReady, setResumeReady] = useState(false)
+  const [savingCampaignDraft, setSavingCampaignDraft] = useState(false)
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null)
 
   const [previewEmail, setPreviewEmail] = useState<string | null>(null)
   const [previewJob, setPreviewJob] = useState<OutreachedJob | null>(null)
@@ -110,6 +115,22 @@ export default function Leads() {
     retry: 1,
     refetchOnWindowFocus: false,
   })
+
+  const {
+    data: draftCampaignsData,
+    isLoading: draftsLoading,
+    refetch: refetchCampaignDrafts,
+  } = useQuery<ManualCampaignDraft[], Error>({
+    queryKey: ["manualCampaignDrafts"],
+    queryFn: async () => {
+      const response = await axios.get<{ drafts: ManualCampaignDraft[] }>("/api/email/outreach/manual-campaigns")
+      return response.data.drafts ?? []
+    },
+    staleTime: 1000 * 30,
+    refetchOnWindowFocus: false,
+  })
+
+  const { data: savedSnippetsData, refetch: refetchSavedSnippets } = useSavedSnippets()
 
   useEffect(() => {
     if (outreachJobsError) {
@@ -191,11 +212,8 @@ export default function Leads() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!resumeReady || typeof window === "undefined") {
-      return
-    }
-    const payload: PersistedWorkflowState = {
+  const buildWorkflowState = useCallback((): PersistedWorkflowState => {
+    return {
       campaignName,
       manualCampaignId,
       sourceType,
@@ -210,11 +228,6 @@ export default function Leads() {
       uploadedFileMeta,
       lastUpdated: Date.now(),
     }
-    try {
-      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
-    } catch (error) {
-      console.error("Failed to persist outreach workflow:", error)
-    }
   }, [
     campaignName,
     manualCampaignId,
@@ -228,8 +241,19 @@ export default function Leads() {
     drafts,
     sendingMode,
     uploadedFileMeta,
-    resumeReady,
   ])
+
+  useEffect(() => {
+    if (!resumeReady || typeof window === "undefined") {
+      return
+    }
+    try {
+      const payload = buildWorkflowState()
+      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
+    } catch (error) {
+      console.error("Failed to persist outreach workflow:", error)
+    }
+  }, [buildWorkflowState, resumeReady])
 
   const handleFileUpload = useCallback(
     async (file: File) => {
@@ -319,6 +343,161 @@ export default function Leads() {
       void handleFileUpload(file)
     },
     [handleFileUpload],
+  )
+
+  const handleSavePromptSnippet = useCallback(
+    async ({ name, content }: { name: string; content: string }) => {
+      const payload = {
+        name: name.trim(),
+        content: content.trim(),
+        type: "PROMPT" as const,
+      }
+      if (!payload.name || !payload.content) {
+        throw new Error("Prompt name and content are required")
+      }
+      try {
+        await axios.post("/api/saved-items", payload)
+        toast.success("Prompt saved to your library")
+        await refetchSavedSnippets().catch(() => undefined)
+      } catch (error) {
+        console.error("Failed to save prompt snippet:", error)
+        if (axios.isAxiosError(error)) {
+          const message = (error.response?.data as { error?: string })?.error ?? "Failed to save prompt"
+          toast.error(message)
+        } else {
+          toast.error("Failed to save prompt")
+        }
+        throw error
+      }
+    },
+    [refetchSavedSnippets],
+  )
+
+  const persistManualCampaignDraft = useCallback(
+    async (nextStatus: ManualCampaignDraftStatus) => {
+      const workflowState = buildWorkflowState()
+      const response = await axios.post<{ draft: ManualCampaignDraft }>("/api/email/outreach/manual-campaigns", {
+        id: workflowState.manualCampaignId,
+        name: workflowState.campaignName,
+        sourceType: workflowState.sourceType,
+        status: nextStatus,
+        state: workflowState,
+      })
+
+      const savedDraft = response.data?.draft
+      if (savedDraft) {
+        setManualCampaignId(savedDraft.id)
+      }
+      return savedDraft
+    },
+    [buildWorkflowState, setManualCampaignId],
+  )
+
+  useEffect(() => {
+    if (!resumeReady) return
+    if (!campaignName.trim() || !sourceType) return
+    if (!manualCampaignId) return
+    const timer = window.setTimeout(() => {
+      void persistManualCampaignDraft("draft").catch(() => undefined)
+    }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [
+    campaignName,
+    sourceType,
+    manualCampaignId,
+    promptInput,
+    chatMessages,
+    drafts,
+    leads,
+    sendingMode,
+    uploadedFileMeta,
+    persistManualCampaignDraft,
+    resumeReady,
+  ])
+
+  const handleSaveCampaignDraft = useCallback(async () => {
+    if (!campaignName.trim() || !sourceType || leads.length === 0) {
+      toast.error("Name your campaign, choose a source, and load leads before saving it.")
+      return
+    }
+    setSavingCampaignDraft(true)
+    try {
+      const saved = await persistManualCampaignDraft("draft")
+      if (saved) {
+        toast.success(`Saved “${saved.name}” as a draft campaign`)
+        await refetchCampaignDrafts().catch(() => undefined)
+      }
+    } catch (error) {
+      console.error("Manual campaign draft save failed:", error)
+      if (axios.isAxiosError(error)) {
+        const message = (error.response?.data as { error?: string })?.error ?? "Failed to save draft campaign"
+        toast.error(message)
+      } else {
+        toast.error("Failed to save draft campaign")
+      }
+    } finally {
+      setSavingCampaignDraft(false)
+    }
+  }, [campaignName, leads, persistManualCampaignDraft, refetchCampaignDrafts, sourceType])
+
+  const handleResumeCampaignDraft = useCallback((draft: ManualCampaignDraft) => {
+    const state = draft.workflowState
+    const safeLeads = Array.isArray(state.leads) ? state.leads : []
+    const safeChats = Array.isArray(state.chatMessages) ? state.chatMessages : []
+
+    setCampaignName(state.campaignName ?? draft.name ?? "")
+    setManualCampaignId(draft.id)
+    setSourceType(state.sourceType ?? draft.sourceType ?? null)
+    const nextStep = (state.currentStep ?? 1) as WizardStep
+    setCurrentStep(nextStep)
+    setSelectedSheetId(state.selectedSheetId ?? "")
+    setSheetRange(state.sheetRange ?? "")
+    setLeads(safeLeads)
+    setPromptInput(state.promptInput ?? "")
+    setChatMessages(safeChats)
+    setDrafts(state.drafts ?? {})
+    setSendingMode(state.sendingMode ?? "single")
+    setUploadedFileMeta(state.uploadedFileMeta ?? null)
+    setWizardOpen(true)
+    setPreviewEmail(null)
+    setSourceError(null)
+    toast.success(`Draft “${draft.name}” loaded`)
+  }, [])
+
+  const handleDeleteCampaignDraft = useCallback(
+    async (draftId: string) => {
+      setDeletingDraftId(draftId)
+      try {
+        await axios.delete(`/api/email/outreach/manual-campaigns/${draftId}`)
+        if (manualCampaignId === draftId) {
+          setManualCampaignId(null)
+        }
+        toast.success("Draft removed")
+        await refetchCampaignDrafts().catch(() => undefined)
+      } catch (error) {
+        console.error("Failed to delete draft campaign:", error)
+        const message =
+          axios.isAxiosError(error) && (error.response?.data as { error?: string })?.error
+            ? (error.response?.data as { error?: string })?.error
+            : "Failed to delete draft campaign"
+        toast.error(message)
+      } finally {
+        setDeletingDraftId(null)
+      }
+    },
+    [manualCampaignId, refetchCampaignDrafts, setManualCampaignId],
+  )
+
+  const syncDraftStatus = useCallback(
+    async (nextStatus: ManualCampaignDraftStatus) => {
+      try {
+        await persistManualCampaignDraft(nextStatus)
+        await refetchCampaignDrafts().catch(() => undefined)
+      } catch (error) {
+        console.warn("Failed to update manual campaign draft status:", error)
+      }
+    },
+    [persistManualCampaignDraft, refetchCampaignDrafts],
   )
 
   const handleSourceTypeChange = useCallback(
@@ -537,6 +716,24 @@ export default function Leads() {
       return fields.some((value) => value?.toLowerCase().includes(query))
     })
   }, [legacyJobs, searchTerm])
+
+  const savedPrompts = useMemo(
+    () => (savedSnippetsData ?? []).filter((snippet) => snippet.type === "PROMPT"),
+    [savedSnippetsData],
+  )
+  const savedSignatures = useMemo(
+    () => (savedSnippetsData ?? []).filter((snippet) => snippet.type === "SIGNATURE"),
+    [savedSnippetsData],
+  )
+
+  const draftCampaigns = useMemo<ManualCampaignDraft[]>(() => {
+    return (draftCampaignsData ?? []).filter((draft) => draft.status === "draft")
+  }, [draftCampaignsData])
+
+  const canSaveCampaignDraft = useMemo(
+    () => Boolean(campaignName.trim() && sourceType && leads.length > 0),
+    [campaignName, leads, sourceType],
+  )
 
   const pendingBulkEmails = useMemo(
     () =>
@@ -887,6 +1084,7 @@ export default function Leads() {
       const successMessage = mode === 'bulk' ? 'All outreach emails were sent successfully.' : 'Email sent successfully.'
       toast.success(successMessage)
       setSourceError(null)
+      await syncDraftStatus('sent')
       await refetchOutreachJobs().catch(() => undefined)
     } catch (error) {
       if (axios.isCancel(error)) {
@@ -1055,6 +1253,9 @@ export default function Leads() {
     },
     isGeneratingFromPrompt,
     hasDrafts,
+    savedPrompts,
+    savedSignatures,
+    onSavePromptSnippet: handleSavePromptSnippet,
     onPrevious: () => {
       setSourceError(null)
       setStep(1)
@@ -1079,6 +1280,9 @@ export default function Leads() {
     onBulkDialogChange: setBulkDialogOpen,
     confirmBulkSend,
     onPreviewDraft: setPreviewEmail,
+    onSaveDraftCampaign: handleSaveCampaignDraft,
+    savingDraftCampaign: savingCampaignDraft,
+    canSaveDraftCampaign: canSaveCampaignDraft,
     isGeneratingFromPrompt,
     onBack: () => {
       setSourceError(null)
@@ -1152,10 +1356,15 @@ export default function Leads() {
 
       <OutreachHistory
         jobsLoading={jobsLoading}
+        draftsLoading={draftsLoading}
+        draftCampaigns={draftCampaigns}
+        deletingDraftId={deletingDraftId}
         manualCampaigns={manualCampaigns}
         filteredCampaigns={filteredCampaigns}
         legacyJobs={legacyJobs}
         filteredLegacyJobs={filteredLegacyJobs}
+        onResumeDraft={handleResumeCampaignDraft}
+        onDeleteDraft={handleDeleteCampaignDraft}
         onRefresh={() => refetchOutreachJobs().catch(() => undefined)}
         onExportAll={() => handleExportOutreachedCsv(undefined, { fileLabel: "outreached-emails" })}
         onExportCampaign={handleExportOutreachedCsv}

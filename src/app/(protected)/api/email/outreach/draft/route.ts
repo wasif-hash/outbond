@@ -4,6 +4,7 @@ import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { generateOutreachEmailDraft } from '@/lib/gemini'
 import { formatEmailBody } from '@/lib/email/format'
+import { ensureCors } from '@/lib/http/cors'
 
 const MAX_LEADS_PER_REQUEST = 50
 
@@ -36,10 +37,20 @@ type StatusEvent =
   | { type: "done"; drafts: DraftPayload[] }
   | { type: "error"; message: string }
 
+export async function OPTIONS(request: NextRequest) {
+  const cors = await ensureCors(request)
+  return cors.respond(null, { status: cors.statusCode })
+}
+
 export async function POST(request: NextRequest) {
+  const cors = await ensureCors(request)
+  if (cors.isPreflight) {
+    return cors.respond()
+  }
+
   const authResult = await verifyAuth(request)
   if (!authResult.success || !authResult.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    return cors.apply(NextResponse.json({ error: "Unauthorized" }, { status: 401 }))
   }
 
   const body = (await request.json().catch(() => null)) as {
@@ -48,16 +59,18 @@ export async function POST(request: NextRequest) {
   } | null
 
   if (!body || !Array.isArray(body.leads) || body.leads.length === 0) {
-    return NextResponse.json({ error: "No leads provided" }, { status: 400 })
+    return cors.apply(NextResponse.json({ error: "No leads provided" }, { status: 400 }))
   }
 
   if (body.leads.length > MAX_LEADS_PER_REQUEST) {
-    return NextResponse.json({ error: `Too many leads; max ${MAX_LEADS_PER_REQUEST} per request` }, { status: 400 })
+    return cors.apply(
+      NextResponse.json({ error: `Too many leads; max ${MAX_LEADS_PER_REQUEST} per request` }, { status: 400 }),
+    )
   }
 
   const gmailAccount = await prisma.gmailAccount.findUnique({ where: { userId: authResult.user.userId } })
   if (!gmailAccount) {
-    return NextResponse.json({ error: "Gmail account not connected" }, { status: 409 })
+    return cors.apply(NextResponse.json({ error: "Gmail account not connected" }, { status: 409 }))
   }
 
   const leads = body.leads
@@ -160,12 +173,14 @@ export async function POST(request: NextRequest) {
     },
   })
 
-  return new Response(stream, {
+  const response = new Response(stream, {
     headers: {
       "Content-Type": "application/x-ndjson",
       "Cache-Control": "no-store",
     },
   })
+
+  return cors.apply(response)
 }
 
 function defaultSubject(lead: LeadDraftInput): string {

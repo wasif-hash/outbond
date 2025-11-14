@@ -14,7 +14,7 @@ export default async function RepliesPage() {
     redirect("/login")
   }
 
-  const replies = await fetchRepliesForUser(user.id)
+  const replies = await fetchRepliesForUser(user.userId)
 
   return <RepliesClient replies={replies} />
 }

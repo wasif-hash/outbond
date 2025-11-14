@@ -22,9 +22,11 @@ const getApiStatus = (error: unknown): number | undefined => {
   return directStatus ?? nestedStatus
 }
 
+type RouteContext = { params: Promise<{ spreadsheetId: string }> }
+
 export async function GET(
   request: NextRequest,
-  context: { params: Promise<{ spreadsheetId: string }> },
+  context: RouteContext,
 ) {
   try {
     const authResult = await verifyAuth(request)
