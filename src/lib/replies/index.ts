@@ -1,6 +1,8 @@
 import { Prisma, ReplyDisposition } from "@prisma/client"
+import { google, gmail_v1 } from "googleapis"
 
 import { prisma } from "@/lib/prisma"
+import { ensureFreshGmailToken, createAuthorizedGmailClient } from "@/lib/google-gmail"
 
 import { classifyReplyContent, createExtractedSummary } from "./classifier"
 import type { ReplyRecord } from "./types"
@@ -66,6 +68,25 @@ function normalizeClassifier(model: string | null): "openai" | "heuristic" | nul
   if (model.startsWith("heuristic")) return "heuristic"
   return null
 }
+
+const DEFAULT_REPLY_SYNC_LOOKBACK_DAYS = 30
+const DEFAULT_REPLY_SYNC_MAX_RESULTS = 75
+const DEFAULT_REPLY_SYNC_FETCH_BATCH = 10
+
+const REPLY_SYNC_LOOKBACK_DAYS = (() => {
+  const parsed = Number(process.env.REPLY_SYNC_LOOKBACK_DAYS ?? "")
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_REPLY_SYNC_LOOKBACK_DAYS
+})()
+
+const REPLY_SYNC_MAX_RESULTS = (() => {
+  const parsed = Number(process.env.REPLY_SYNC_MAX_RESULTS ?? "")
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 250) : DEFAULT_REPLY_SYNC_MAX_RESULTS
+})()
+
+const REPLY_SYNC_FETCH_BATCH = (() => {
+  const parsed = Number(process.env.REPLY_SYNC_FETCH_BATCH ?? "")
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 25) : DEFAULT_REPLY_SYNC_FETCH_BATCH
+})()
 
 type RawEmailReply = Prisma.EmailReplyGetPayload<{
   include: {
@@ -169,7 +190,306 @@ async function classifyIfNeeded(reply: RawEmailReply): Promise<void> {
   reply.bodyPlain = reply.bodyPlain ?? plainBody
 }
 
+function getHeaderValue(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string | null {
+  if (!headers?.length) {
+    return null
+  }
+  const match = headers.find((header) => header.name?.toLowerCase() === name.toLowerCase())
+  return match?.value ?? null
+}
+
+function extractEmailAddress(value: string | null): string | null {
+  if (!value) return null
+  const emailMatch = value.match(/<([^>]+)>/)
+  const candidate = (emailMatch ? emailMatch[1] : value).trim()
+  if (!candidate || !candidate.includes("@")) {
+    return null
+  }
+  return candidate
+}
+
+function decodePartBody(body: gmail_v1.Schema$MessagePartBody | null | undefined): string | null {
+  if (!body?.data) {
+    return null
+  }
+  try {
+    const normalized = body.data.replace(/-/g, "+").replace(/_/g, "/")
+    return Buffer.from(normalized, "base64").toString("utf8")
+  } catch (error) {
+    console.error("Failed to decode Gmail message body", error)
+    return null
+  }
+}
+
+function extractMessageBodies(payload: gmail_v1.Schema$MessagePart | undefined | null): { plain: string | null; html: string | null } {
+  if (!payload) {
+    return { plain: null, html: null }
+  }
+
+  const result: { plain: string | null; html: string | null } = { plain: null, html: null }
+  const stack: gmail_v1.Schema$MessagePart[] = [payload]
+
+  while (stack.length > 0) {
+    const part = stack.pop()
+    if (!part) continue
+
+    if (part.parts?.length) {
+      stack.push(...part.parts)
+    }
+
+    if (!part.mimeType || !part.body) {
+      continue
+    }
+
+    if (!result.plain && part.mimeType.startsWith("text/plain")) {
+      result.plain = decodePartBody(part.body)
+    } else if (!result.html && part.mimeType.startsWith("text/html")) {
+      result.html = decodePartBody(part.body)
+    }
+
+    if (result.plain && result.html) {
+      break
+    }
+  }
+
+  if (!result.plain && payload.mimeType?.startsWith("text/plain")) {
+    result.plain = decodePartBody(payload.body)
+  }
+  if (!result.html && payload.mimeType?.startsWith("text/html")) {
+    result.html = decodePartBody(payload.body)
+  }
+
+  return result
+}
+
+function parseInternalDate(internalDate: string | null | undefined): Date {
+  if (!internalDate) {
+    return new Date()
+  }
+  const timestamp = Number(internalDate)
+  if (Number.isFinite(timestamp)) {
+    return new Date(timestamp)
+  }
+  return new Date()
+}
+
+async function syncRepliesForUser(userId: string): Promise<void> {
+  const gmailAccount = await prisma.gmailAccount.findUnique({ where: { userId } })
+  if (!gmailAccount) {
+    return
+  }
+
+  let refreshedAccount
+  try {
+    refreshedAccount = await ensureFreshGmailToken(gmailAccount)
+  } catch (error) {
+    console.error("Failed to refresh Gmail token for reply sync", error)
+    return
+  }
+
+  let authClient
+  try {
+    authClient = await createAuthorizedGmailClient(refreshedAccount.accessToken, refreshedAccount.refreshToken)
+  } catch (error) {
+    console.error("Failed to create Gmail client for reply sync", error)
+    return
+  }
+
+  const gmail = google.gmail({ version: "v1", auth: authClient })
+  let messageMetas: gmail_v1.Schema$Message[] = []
+
+  const queryParts = [
+    "in:inbox",
+    `newer_than:${REPLY_SYNC_LOOKBACK_DAYS}d`,
+    "-from:me",
+    `-from:${refreshedAccount.emailAddress}`,
+    "-category:social",
+    "-category:promotions",
+  ]
+
+  try {
+    const listResponse = await gmail.users.messages.list({
+      userId: "me",
+      q: queryParts.join(" "),
+      labelIds: ["INBOX"],
+      maxResults: REPLY_SYNC_MAX_RESULTS,
+    })
+    messageMetas = listResponse.data.messages ?? []
+  } catch (error) {
+    console.error("Failed to list Gmail messages during reply sync", error)
+    return
+  }
+
+  if (messageMetas.length === 0) {
+    return
+  }
+
+  const messageIds = messageMetas.map((meta) => meta.id).filter((id): id is string => Boolean(id))
+  if (messageIds.length === 0) {
+    return
+  }
+
+  const existingReplies = await prisma.emailReply.findMany({
+    where: {
+      userId,
+      gmailMessageId: { in: messageIds },
+    },
+    select: {
+      gmailMessageId: true,
+    },
+  })
+  const existingIds = new Set(existingReplies.map((reply) => reply.gmailMessageId).filter((id): id is string => Boolean(id)))
+  const pendingIds = messageIds.filter((id) => !existingIds.has(id))
+
+  if (pendingIds.length === 0) {
+    return
+  }
+
+  const detailedMessages: gmail_v1.Schema$Message[] = []
+  for (let i = 0; i < pendingIds.length; i += REPLY_SYNC_FETCH_BATCH) {
+    const chunk = pendingIds.slice(i, i + REPLY_SYNC_FETCH_BATCH)
+    const chunkMessages = await Promise.all(
+      chunk.map(async (id) => {
+        try {
+          const response = await gmail.users.messages.get({
+            userId: "me",
+            id,
+            format: "full",
+          })
+          return response.data
+        } catch (error) {
+          console.error(`Failed to fetch Gmail message ${id}`, error)
+          return null
+        }
+      }),
+    )
+    for (const message of chunkMessages) {
+      if (message) {
+        detailedMessages.push(message)
+      }
+    }
+  }
+
+  if (detailedMessages.length === 0) {
+    return
+  }
+
+  const emailTuples = detailedMessages
+    .map((message) => {
+      const email = extractEmailAddress(getHeaderValue(message.payload?.headers, "From"))
+      if (!email) return null
+      const trimmed = email.trim()
+      if (!trimmed) return null
+      return {
+        original: trimmed,
+        normalized: trimmed.toLowerCase(),
+      }
+    })
+    .filter((tuple): tuple is { original: string; normalized: string } => Boolean(tuple))
+
+  if (emailTuples.length === 0) {
+    return
+  }
+
+  const queryEmails = Array.from(new Set(emailTuples.flatMap((tuple) => [tuple.original, tuple.normalized])))
+
+  const leads = await prisma.lead.findMany({
+    where: {
+      userId,
+      email: { in: queryEmails },
+    },
+    select: {
+      id: true,
+      email: true,
+      campaignId: true,
+    },
+  })
+  const leadMap = new Map(leads.map((lead) => [lead.email.toLowerCase(), lead]))
+
+  const sendJobs = await prisma.emailSendJob.findMany({
+    where: {
+      userId,
+      leadEmail: { in: queryEmails },
+      status: "SENT",
+    },
+    orderBy: {
+      sentAt: "desc",
+    },
+    select: {
+      id: true,
+      leadEmail: true,
+      campaignId: true,
+    },
+  })
+
+  const jobMap = new Map<string, (typeof sendJobs)[number]>()
+  for (const job of sendJobs) {
+    const key = job.leadEmail.toLowerCase()
+    if (!jobMap.has(key)) {
+      jobMap.set(key, job)
+    }
+  }
+
+  const createPayloads: Prisma.EmailReplyCreateManyInput[] = []
+
+  for (const message of detailedMessages) {
+    const gmailMessageId = message.id
+    if (!gmailMessageId || existingIds.has(gmailMessageId)) {
+      continue
+    }
+
+    const fromEmail = extractEmailAddress(getHeaderValue(message.payload?.headers, "From"))
+    if (!fromEmail) {
+      continue
+    }
+
+    const normalizedEmail = fromEmail.toLowerCase()
+    const associatedLead = leadMap.get(normalizedEmail) ?? null
+    const associatedJob = jobMap.get(normalizedEmail) ?? null
+
+    if (!associatedLead && !associatedJob) {
+      continue
+    }
+
+    const subject = getHeaderValue(message.payload?.headers, "Subject")
+    const bodies = extractMessageBodies(message.payload)
+    const receivedAt = parseInternalDate(message.internalDate)
+
+    createPayloads.push({
+      userId,
+      leadEmail: fromEmail,
+      subject: subject ?? null,
+      snippet: message.snippet ?? bodies.plain ?? bodies.html ?? null,
+      bodyPlain: bodies.plain,
+      bodyHtml: bodies.html,
+      receivedAt,
+      gmailMessageId,
+      gmailThreadId: message.threadId ?? null,
+      leadId: associatedLead?.id ?? null,
+      campaignId: associatedLead?.campaignId ?? associatedJob?.campaignId ?? null,
+      emailSendJobId: associatedJob?.id ?? null,
+    })
+  }
+
+  if (createPayloads.length === 0) {
+    return
+  }
+
+  try {
+    await prisma.emailReply.createMany({
+      data: createPayloads,
+      skipDuplicates: true,
+    })
+  } catch (error) {
+    console.error("Failed to persist Gmail replies", error)
+  }
+}
+
 export async function fetchRepliesForUser(userId: string): Promise<ReplyRecord[]> {
+  await syncRepliesForUser(userId).catch((error) => {
+    console.error("Failed to sync Gmail replies", error)
+  })
+
   const replies = await prisma.emailReply.findMany({
     where: { userId },
     include: {

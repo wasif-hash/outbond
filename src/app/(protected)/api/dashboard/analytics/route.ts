@@ -28,126 +28,124 @@ export async function GET(request: NextRequest) {
     const trendStart = new Date(today)
     trendStart.setDate(trendStart.getDate() - (TREND_WINDOW_DAYS - 1))
 
-    const [leadWriteAggregate, leadJobs, outreachSentCount, outreachJobs, totalUserCount, recentLeads, recentCampaignJobs] =
-      await Promise.all([
-        prisma.campaignJob.aggregate({
-          where: {
-            campaign: {
-              userId,
-            },
-            status: "SUCCEEDED",
-          },
-          _sum: {
-            leadsWritten: true,
-          },
-        }),
-        prisma.campaignJob.findMany({
-          where: {
-            campaign: {
-              userId,
-            },
-            finishedAt: {
-              not: null,
-              gte: trendStart,
-            },
-          },
-          select: {
-            id: true,
-            finishedAt: true,
-            createdAt: true,
-            leadsWritten: true,
-            campaign: {
-              select: {
-                name: true,
-              },
-            },
-          },
-        }),
-        prisma.emailSendJob.count({
-          where: {
+    const [
+      leadWriteAggregate,
+      outreachSentCount,
+      totalUserCount,
+      recentLeads,
+      recentCampaignJobs,
+      recentEmailJobs,
+      leadTrendRows,
+      outreachTrendRows,
+    ] = await Promise.all([
+      prisma.campaignJob.aggregate({
+        where: {
+          campaign: {
             userId,
-            status: "SENT",
           },
-        }),
-        prisma.emailSendJob.findMany({
-          where: {
+          status: "SUCCEEDED",
+        },
+        _sum: {
+          leadsWritten: true,
+        },
+      }),
+      prisma.emailSendJob.count({
+        where: {
+          userId,
+          status: "SENT",
+        },
+      }),
+      isAdmin
+        ? prisma.user.count({
+            where: {
+              role: {
+                in: ["admin", "user"],
+              },
+            },
+          })
+        : null,
+      prisma.lead.findMany({
+        where: {
+          userId,
+          createdAt: {
+            gte: trendStart,
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 20,
+        select: {
+          id: true,
+          email: true,
+          company: true,
+          createdAt: true,
+        },
+      }),
+      prisma.campaignJob.findMany({
+        where: {
+          campaign: {
             userId,
-            OR: [
-              {
-                sentAt: {
-                  not: null,
-                  gte: trendStart,
-                },
-              },
-              {
-                createdAt: {
-                  gte: trendStart,
-                },
-              },
-            ],
           },
-          select: {
-            id: true,
-            leadEmail: true,
-            subject: true,
-            status: true,
-            createdAt: true,
-            sentAt: true,
+          createdAt: {
+            gte: trendStart,
           },
-        }),
-        isAdmin
-          ? prisma.user.count({
-              where: {
-                role: {
-                  in: ["admin", "user"],
-                },
-              },
-            })
-          : null,
-        prisma.lead.findMany({
-          where: {
-            userId,
-            createdAt: {
-              gte: trendStart,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 20,
+        select: {
+          id: true,
+          status: true,
+          createdAt: true,
+          finishedAt: true,
+          campaign: {
+            select: {
+              name: true,
             },
           },
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 20,
-          select: {
-            id: true,
-            email: true,
-            company: true,
-            createdAt: true,
-          },
-        }),
-        prisma.campaignJob.findMany({
-          where: {
-            campaign: {
-              userId,
-            },
-            createdAt: {
-              gte: trendStart,
-            },
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
-          take: 20,
-          select: {
-            id: true,
-            status: true,
-            createdAt: true,
-            finishedAt: true,
-            campaign: {
-              select: {
-                name: true,
-              },
-            },
-          },
-        }),
-      ])
+        },
+      }),
+      prisma.emailSendJob.findMany({
+        where: {
+          userId,
+        },
+        orderBy: [
+          { sentAt: "desc" },
+          { createdAt: "desc" },
+        ],
+        take: 30,
+        select: {
+          id: true,
+          leadEmail: true,
+          subject: true,
+          status: true,
+          createdAt: true,
+          sentAt: true,
+        },
+      }),
+      prisma.$queryRaw<{ day: Date; count: number }[]>`
+        SELECT
+          date_trunc('day', COALESCE(cj."finishedAt", cj."createdAt")) AS day,
+          COALESCE(SUM(cj."leadsWritten"), 0)::int AS count
+        FROM "CampaignJob" cj
+        INNER JOIN "Campaign" c ON c."id" = cj."campaignId"
+        WHERE c."userId" = ${userId}
+          AND cj."status" = 'SUCCEEDED'
+          AND COALESCE(cj."finishedAt", cj."createdAt") >= ${trendStart}
+        GROUP BY 1
+      `,
+      prisma.$queryRaw<{ day: Date; count: number }[]>`
+        SELECT
+          date_trunc('day', COALESCE(e."sentAt", e."createdAt")) AS day,
+          COUNT(*)::int AS count
+        FROM "EmailSendJob" e
+        WHERE e."userId" = ${userId}
+          AND COALESCE(e."sentAt", e."createdAt") >= ${trendStart}
+        GROUP BY 1
+      `,
+    ])
 
     const leadTrendMap = new Map<string, number>()
     const outreachTrendMap = new Map<string, number>()
@@ -160,30 +158,18 @@ export async function GET(request: NextRequest) {
       outreachTrendMap.set(key, 0)
     }
 
-    leadJobs.forEach((job) => {
-      const referenceDate = job.finishedAt ?? job.createdAt
-      if (!referenceDate) {
-        return
+    leadTrendRows.forEach((row) => {
+      const key = formatDayKey(row.day)
+      if (leadTrendMap.has(key)) {
+        leadTrendMap.set(key, row.count ?? 0)
       }
-      const key = formatDayKey(referenceDate)
-      if (!leadTrendMap.has(key)) {
-        return
-      }
-      const current = leadTrendMap.get(key) ?? 0
-      leadTrendMap.set(key, current + Math.max(job.leadsWritten ?? 0, 0))
     })
 
-    outreachJobs.forEach((job) => {
-      const referenceDate = job.sentAt ?? job.createdAt
-      if (!referenceDate) {
-        return
+    outreachTrendRows.forEach((row) => {
+      const key = formatDayKey(row.day)
+      if (outreachTrendMap.has(key)) {
+        outreachTrendMap.set(key, row.count ?? 0)
       }
-      const key = formatDayKey(referenceDate)
-      if (!outreachTrendMap.has(key)) {
-        return
-      }
-      const current = outreachTrendMap.get(key) ?? 0
-      outreachTrendMap.set(key, current + 1)
     })
 
     const leadTrend = Array.from(leadTrendMap.entries())
@@ -200,7 +186,7 @@ export async function GET(request: NextRequest) {
         count,
       }))
 
-    const emailActivityItems = outreachJobs
+    const emailActivityItems = recentEmailJobs
       .map((job) => ({
         id: `email-${job.id}`,
         type: "email" as const,

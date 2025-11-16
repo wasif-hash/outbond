@@ -17,8 +17,8 @@ const resolveIdParam = (value: string | string[] | undefined): string | null =>
 
 export async function POST(request: NextRequest, context: RouteContext) {
   try {
-    const params = await context.params
-    const campaignId = resolveIdParam(params?.id)
+    const resolvedParams = await context.params
+    const campaignId = resolveIdParam(resolvedParams?.id)
     if (!campaignId) {
       return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
     }

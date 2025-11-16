@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { SheetSelector } from '@/components/google-sheet/SheetSelector'
 import { toast } from 'sonner'
 import { validateCampaignData } from '@/lib/utils'
 import { useGoogleSheets } from '@/hooks/useGoogleSheet'
@@ -62,6 +62,29 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
     disconnectGoogleAccount,
     fetchSpreadsheets
   } = useGoogleSheets()
+<<<<<<< HEAD
+=======
+  // Check connection status when modal opens
+  useEffect(() => {
+    if (open) {
+      void checkConnectionStatus()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // Fetch spreadsheets when connected
+  useEffect(() => {
+    if (status?.isConnected && !status?.isExpired && spreadsheets.length === 0) {
+      console.log('Status is connected, fetching spreadsheets...')
+      void fetchSpreadsheets()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, spreadsheets.length])
+
+  useEffect(() => () => {
+    submitCancelRef.current?.cancel('Component unmounted')
+  }, [])
+>>>>>>> origin/main
 
   const handleInputChange = (field: keyof FormData, value: string | number | string[]) => {
     setFormData(prev => {
@@ -382,21 +405,14 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
                     No spreadsheets found. Create a Google Sheet first or click the Fetch Spreadsheets button above.
                   </div>
                 ) : (
-                  <Select 
-                    value={formData.googleSheetId} 
-                    onValueChange={(value) => handleInputChange('googleSheetId', value)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a Google Sheet" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {spreadsheets.map((sheet) => (
-                        <SelectItem key={sheet.id} value={sheet.id}>
-                          {sheet.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <SheetSelector
+                    sheets={spreadsheets}
+                    value={formData.googleSheetId}
+                    onChange={(value) => handleInputChange('googleSheetId', value)}
+                    disabled={spreadsheets.length === 0}
+                    loading={loading}
+                    emptyMessage="No sheets match your search."
+                  />
                 )}
                 
                 {selectedSheet && (

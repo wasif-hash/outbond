@@ -2,13 +2,24 @@ import { NextRequest, NextResponse } from 'next/server'
 
 import { verifyAuth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { ensureCors } from '@/lib/http/cors'
 
 const DEFAULT_LIMIT = 200
 
+export async function OPTIONS(request: NextRequest) {
+  const cors = await ensureCors(request)
+  return cors.respond(null, { status: cors.statusCode })
+}
+
 export async function GET(request: NextRequest) {
+  const cors = await ensureCors(request)
+  if (cors.isPreflight) {
+    return cors.respond()
+  }
+
   const authResult = await verifyAuth(request)
   if (!authResult.success || !authResult.user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return cors.apply(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
   }
 
   const { searchParams } = new URL(request.url)
@@ -36,5 +47,5 @@ export async function GET(request: NextRequest) {
     take: limit,
   })
 
-  return NextResponse.json({ jobs })
+  return cors.apply(NextResponse.json({ jobs }))
 }

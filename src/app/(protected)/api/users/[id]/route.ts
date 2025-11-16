@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 import { deleteUser, updateUserRole } from "@/actions/user-actions";
 import { verifyAuth } from "@/lib/auth";
 
-type RouteContext = {
+type RouteParams = {
   params: Promise<{ id: string | string[] | undefined } | undefined>;
 };
 
@@ -27,10 +27,10 @@ const resolveClientIdentifier = (request: NextRequest): string => {
   return "unknown";
 };
 
-export async function DELETE(request: NextRequest, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteParams) {
   try {
-    const params = await context.params;
-    const id = resolveIdParam(params?.id);
+    const resolvedParams = await context.params;
+    const id = resolveIdParam(resolvedParams?.id);
     if (!id) {
       return NextResponse.json({ error: "Invalid user id" }, { status: 400 });
     }
@@ -83,10 +83,10 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
   }
 }
 
-export async function PATCH(request: NextRequest, context: RouteContext) {
+export async function PATCH(request: NextRequest, context: RouteParams) {
   try {
-    const params = await context.params;
-    const id = resolveIdParam(params?.id);
+    const resolvedParams = await context.params;
+    const id = resolveIdParam(resolvedParams?.id);
     if (!id) {
       return NextResponse.json({ error: "Invalid user id" }, { status: 400 });
     }

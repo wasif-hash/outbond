@@ -3,20 +3,26 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Eye, Download, RefreshCw } from "lucide-react"
+import { Download, Eye, Play, RefreshCw, Trash2 } from "lucide-react"
 
 import { FastSpinner } from "./FastSpinner"
 import type { ManualCampaignGroup } from "./types"
 import type { OutreachedJob } from "@/types/outreach"
+import type { ManualCampaignDraft } from "@/types/outreach-workflow"
 import { cn } from "@/lib/utils"
 import { jobStatusBadgeProps } from "@/lib/leads/outreach"
 
 type OutreachHistoryProps = {
   jobsLoading: boolean
+  draftsLoading: boolean
+  draftCampaigns: ManualCampaignDraft[]
+  deletingDraftId: string | null
   manualCampaigns: ManualCampaignGroup[]
   filteredCampaigns: ManualCampaignGroup[]
   legacyJobs: OutreachedJob[]
   filteredLegacyJobs: OutreachedJob[]
+  onResumeDraft: (draft: ManualCampaignDraft) => void
+  onDeleteDraft: (draftId: string) => void
   onRefresh: () => void
   onExportAll: () => void
   onExportCampaign: (jobs: OutreachedJob[], options?: { fileLabel?: string }) => void
@@ -26,10 +32,15 @@ type OutreachHistoryProps = {
 
 export function OutreachHistory({
   jobsLoading,
+  draftsLoading,
+  draftCampaigns,
+  deletingDraftId,
   manualCampaigns,
   filteredCampaigns,
   legacyJobs,
   filteredLegacyJobs,
+  onResumeDraft,
+  onDeleteDraft,
   onRefresh,
   onExportAll,
   onExportCampaign,
@@ -64,6 +75,14 @@ export function OutreachHistory({
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        <DraftCampaigns
+          draftCampaigns={draftCampaigns}
+          draftsLoading={draftsLoading}
+          deletingDraftId={deletingDraftId}
+          onResumeDraft={onResumeDraft}
+          onDeleteDraft={onDeleteDraft}
+        />
+
         <CompletedCampaigns
           jobsLoading={jobsLoading}
           manualCampaigns={manualCampaigns}
@@ -80,6 +99,90 @@ export function OutreachHistory({
         />
       </CardContent>
     </Card>
+  )
+}
+
+function DraftCampaigns({
+  draftsLoading,
+  deletingDraftId,
+  onResumeDraft,
+  onDeleteDraft,
+  draftCampaigns,
+}: Pick<OutreachHistoryProps, "draftsLoading" | "deletingDraftId" | "onResumeDraft" | "onDeleteDraft"> & {
+  draftCampaigns: ManualCampaignDraft[]
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Draft campaigns</h3>
+          <p className="text-xs text-muted-foreground">
+            Save progress from the outreach wizard and pick up where you left off.
+          </p>
+        </div>
+        <Badge variant="outline" className="font-mono uppercase">
+          {draftCampaigns.length} saved
+        </Badge>
+      </div>
+      {draftsLoading ? (
+        <div className="flex h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
+          <FastSpinner />
+          Loading drafts…
+        </div>
+      ) : draftCampaigns.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
+          No drafts yet. Use “Save draft campaign” in Step 3 to store your prompt, leads, and AI drafts.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {draftCampaigns.map((draft) => {
+            const leadCount = Array.isArray(draft.workflowState?.leads) ? draft.workflowState.leads.length : 0
+            const promptPreview = draft.workflowState?.promptInput?.trim()
+            return (
+              <div
+                key={draft.id}
+                className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-foreground">{draft.name}</span>
+                    <Badge variant="outline" className="text-[10px] uppercase">
+                      {draft.status.toUpperCase()}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {leadCount} lead{leadCount === 1 ? "" : "s"} saved · Updated {new Date(draft.updatedAt).toLocaleString()}
+                  </p>
+                  {promptPreview ? (
+                    <p className="text-xs text-muted-foreground line-clamp-1">Prompt: {promptPreview}</p>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" size="sm" onClick={() => onResumeDraft(draft)}>
+                    <Play className="mr-2 h-4 w-4" />
+                    Resume
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onDeleteDraft(draft.id)}
+                    disabled={deletingDraftId === draft.id}
+                  >
+                    {deletingDraftId === draft.id ? (
+                      <FastSpinner size="sm" className="mr-2" />
+                    ) : (
+                      <Trash2 className="mr-2 h-4 w-4" />
+                    )}
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
   )
 }
 

@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useGoogleSheets } from "@/hooks/useGoogleSheet"
+import { useSavedSnippets } from "@/hooks/useSavedSnippets"
 import { useGmail } from "@/hooks/useGmail"
 import {
   DraftRecord,
@@ -27,7 +28,9 @@ import type { StepOneProps, StepTwoProps, StepThreeProps, WizardOverlayProps } f
 import { SentEmailPanel } from "./components/sent-email-panel"
 import { SentCampaignPanel } from "./components/sent-campaign-panel"
 import { OutreachHistory } from "./components/outreach-history"
-import type { ChatMessage, ManualCampaignGroup, OutreachSourceType, PersistedWorkflowState, WizardStep } from "./components/types"
+import type { ChatMessage, ManualCampaignGroup, OutreachSourceType, WizardStep } from "./components/types"
+import type { ManualCampaignDraft, ManualCampaignDraftStatus, PersistedWorkflowState } from "@/types/outreach-workflow"
+import type { SavedSnippet } from "@/types/saved-snippet"
 
 const SOURCE_OPTIONS: Array<{ value: OutreachSourceType; label: string; description: string }> = [
   {
@@ -82,6 +85,8 @@ export default function Leads() {
   const [sourceError, setSourceError] = useState<string | null>(null)
   const [uploadedFileMeta, setUploadedFileMeta] = useState<{ name: string; importedAt: number; rowCount: number } | null>(null)
   const [resumeReady, setResumeReady] = useState(false)
+  const [savingCampaignDraft, setSavingCampaignDraft] = useState(false)
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null)
 
   const [previewEmail, setPreviewEmail] = useState<string | null>(null)
   const [previewJob, setPreviewJob] = useState<OutreachedJob | null>(null)
@@ -90,7 +95,7 @@ export default function Leads() {
   const [editedSubject, setEditedSubject] = useState("")
   const [editedBody, setEditedBody] = useState("")
 
-  const generateCancelSourceRef = useRef<CancelTokenSource | null>(null)
+  const generateCancelSourceRef = useRef<AbortController | null>(null)
   const sendCancelSourceRef = useRef<CancelTokenSource | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -111,6 +116,22 @@ export default function Leads() {
     refetchOnWindowFocus: false,
   })
 
+  const {
+    data: draftCampaignsData,
+    isLoading: draftsLoading,
+    refetch: refetchCampaignDrafts,
+  } = useQuery<ManualCampaignDraft[], Error>({
+    queryKey: ["manualCampaignDrafts"],
+    queryFn: async () => {
+      const response = await axios.get<{ drafts: ManualCampaignDraft[] }>("/api/email/outreach/manual-campaigns")
+      return response.data.drafts ?? []
+    },
+    staleTime: 1000 * 30,
+    refetchOnWindowFocus: false,
+  })
+
+  const { data: savedSnippetsData, refetch: refetchSavedSnippets } = useSavedSnippets()
+
   useEffect(() => {
     if (outreachJobsError) {
       toast.error("Failed to load outreached emails")
@@ -130,6 +151,15 @@ export default function Leads() {
     fetchSheetData,
   } = useGoogleSheets()
   const jobsLoading = jobsInitialLoading || jobsFetching
+
+  const createAbortController = useCallback((holder: { current: AbortController | null }) => {
+    if (holder.current) {
+      holder.current.abort()
+    }
+    const controller = new AbortController()
+    holder.current = controller
+    return controller
+  }, [])
 
   const createCancelSource = useCallback((holder: { current: CancelTokenSource | null }, reason = 'Cancelled due to a new request') => {
     if (holder.current) {
@@ -181,11 +211,8 @@ export default function Leads() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!resumeReady || typeof window === "undefined") {
-      return
-    }
-    const payload: PersistedWorkflowState = {
+  const buildWorkflowState = useCallback((): PersistedWorkflowState => {
+    return {
       campaignName,
       manualCampaignId,
       sourceType,
@@ -200,11 +227,6 @@ export default function Leads() {
       uploadedFileMeta,
       lastUpdated: Date.now(),
     }
-    try {
-      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
-    } catch (error) {
-      console.error("Failed to persist outreach workflow:", error)
-    }
   }, [
     campaignName,
     manualCampaignId,
@@ -218,8 +240,19 @@ export default function Leads() {
     drafts,
     sendingMode,
     uploadedFileMeta,
-    resumeReady,
   ])
+
+  useEffect(() => {
+    if (!resumeReady || typeof window === "undefined") {
+      return
+    }
+    try {
+      const payload = buildWorkflowState()
+      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
+    } catch (error) {
+      console.error("Failed to persist outreach workflow:", error)
+    }
+  }, [buildWorkflowState, resumeReady])
 
   const handleFileUpload = useCallback(
     async (file: File) => {
@@ -311,6 +344,161 @@ export default function Leads() {
     [handleFileUpload],
   )
 
+  const handleSavePromptSnippet = useCallback(
+    async ({ name, content }: { name: string; content: string }) => {
+      const payload = {
+        name: name.trim(),
+        content: content.trim(),
+        type: "PROMPT" as const,
+      }
+      if (!payload.name || !payload.content) {
+        throw new Error("Prompt name and content are required")
+      }
+      try {
+        await axios.post("/api/saved-items", payload)
+        toast.success("Prompt saved to your library")
+        await refetchSavedSnippets().catch(() => undefined)
+      } catch (error) {
+        console.error("Failed to save prompt snippet:", error)
+        if (axios.isAxiosError(error)) {
+          const message = (error.response?.data as { error?: string })?.error ?? "Failed to save prompt"
+          toast.error(message)
+        } else {
+          toast.error("Failed to save prompt")
+        }
+        throw error
+      }
+    },
+    [refetchSavedSnippets],
+  )
+
+  const persistManualCampaignDraft = useCallback(
+    async (nextStatus: ManualCampaignDraftStatus) => {
+      const workflowState = buildWorkflowState()
+      const response = await axios.post<{ draft: ManualCampaignDraft }>("/api/email/outreach/manual-campaigns", {
+        id: workflowState.manualCampaignId,
+        name: workflowState.campaignName,
+        sourceType: workflowState.sourceType,
+        status: nextStatus,
+        state: workflowState,
+      })
+
+      const savedDraft = response.data?.draft
+      if (savedDraft) {
+        setManualCampaignId(savedDraft.id)
+      }
+      return savedDraft
+    },
+    [buildWorkflowState, setManualCampaignId],
+  )
+
+  useEffect(() => {
+    if (!resumeReady) return
+    if (!campaignName.trim() || !sourceType) return
+    if (!manualCampaignId) return
+    const timer = window.setTimeout(() => {
+      void persistManualCampaignDraft("draft").catch(() => undefined)
+    }, 2500)
+    return () => window.clearTimeout(timer)
+  }, [
+    campaignName,
+    sourceType,
+    manualCampaignId,
+    promptInput,
+    chatMessages,
+    drafts,
+    leads,
+    sendingMode,
+    uploadedFileMeta,
+    persistManualCampaignDraft,
+    resumeReady,
+  ])
+
+  const handleSaveCampaignDraft = useCallback(async () => {
+    if (!campaignName.trim() || !sourceType || leads.length === 0) {
+      toast.error("Name your campaign, choose a source, and load leads before saving it.")
+      return
+    }
+    setSavingCampaignDraft(true)
+    try {
+      const saved = await persistManualCampaignDraft("draft")
+      if (saved) {
+        toast.success(`Saved “${saved.name}” as a draft campaign`)
+        await refetchCampaignDrafts().catch(() => undefined)
+      }
+    } catch (error) {
+      console.error("Manual campaign draft save failed:", error)
+      if (axios.isAxiosError(error)) {
+        const message = (error.response?.data as { error?: string })?.error ?? "Failed to save draft campaign"
+        toast.error(message)
+      } else {
+        toast.error("Failed to save draft campaign")
+      }
+    } finally {
+      setSavingCampaignDraft(false)
+    }
+  }, [campaignName, leads, persistManualCampaignDraft, refetchCampaignDrafts, sourceType])
+
+  const handleResumeCampaignDraft = useCallback((draft: ManualCampaignDraft) => {
+    const state = draft.workflowState
+    const safeLeads = Array.isArray(state.leads) ? state.leads : []
+    const safeChats = Array.isArray(state.chatMessages) ? state.chatMessages : []
+
+    setCampaignName(state.campaignName ?? draft.name ?? "")
+    setManualCampaignId(draft.id)
+    setSourceType(state.sourceType ?? draft.sourceType ?? null)
+    const nextStep = (state.currentStep ?? 1) as WizardStep
+    setCurrentStep(nextStep)
+    setSelectedSheetId(state.selectedSheetId ?? "")
+    setSheetRange(state.sheetRange ?? "")
+    setLeads(safeLeads)
+    setPromptInput(state.promptInput ?? "")
+    setChatMessages(safeChats)
+    setDrafts(state.drafts ?? {})
+    setSendingMode(state.sendingMode ?? "single")
+    setUploadedFileMeta(state.uploadedFileMeta ?? null)
+    setWizardOpen(true)
+    setPreviewEmail(null)
+    setSourceError(null)
+    toast.success(`Draft “${draft.name}” loaded`)
+  }, [])
+
+  const handleDeleteCampaignDraft = useCallback(
+    async (draftId: string) => {
+      setDeletingDraftId(draftId)
+      try {
+        await axios.delete(`/api/email/outreach/manual-campaigns/${draftId}`)
+        if (manualCampaignId === draftId) {
+          setManualCampaignId(null)
+        }
+        toast.success("Draft removed")
+        await refetchCampaignDrafts().catch(() => undefined)
+      } catch (error) {
+        console.error("Failed to delete draft campaign:", error)
+        const message =
+          axios.isAxiosError(error) && (error.response?.data as { error?: string })?.error
+            ? (error.response?.data as { error?: string })?.error
+            : "Failed to delete draft campaign"
+        toast.error(message)
+      } finally {
+        setDeletingDraftId(null)
+      }
+    },
+    [manualCampaignId, refetchCampaignDrafts, setManualCampaignId],
+  )
+
+  const syncDraftStatus = useCallback(
+    async (nextStatus: ManualCampaignDraftStatus) => {
+      try {
+        await persistManualCampaignDraft(nextStatus)
+        await refetchCampaignDrafts().catch(() => undefined)
+      } catch (error) {
+        console.warn("Failed to update manual campaign draft status:", error)
+      }
+    },
+    [persistManualCampaignDraft, refetchCampaignDrafts],
+  )
+
   const handleSourceTypeChange = useCallback(
     (next: OutreachSourceType) => {
       setSourceType((previous) => {
@@ -319,7 +507,7 @@ export default function Leads() {
         }
         return next
       })
-      generateCancelSourceRef.current?.cancel("Source changed")
+      generateCancelSourceRef.current?.abort()
       setLeads([])
       setDrafts({})
       setChatMessages([])
@@ -379,7 +567,7 @@ export default function Leads() {
 
   useEffect(() => {
     return () => {
-      generateCancelSourceRef.current?.cancel('Component unmounted')
+      generateCancelSourceRef.current?.abort()
       sendCancelSourceRef.current?.cancel('Component unmounted')
     }
   }, [])
@@ -523,6 +711,24 @@ export default function Leads() {
     })
   }, [legacyJobs, searchTerm])
 
+  const savedPrompts = useMemo(
+    () => (savedSnippetsData ?? []).filter((snippet) => snippet.type === "PROMPT"),
+    [savedSnippetsData],
+  )
+  const savedSignatures = useMemo(
+    () => (savedSnippetsData ?? []).filter((snippet) => snippet.type === "SIGNATURE"),
+    [savedSnippetsData],
+  )
+
+  const draftCampaigns = useMemo<ManualCampaignDraft[]>(() => {
+    return (draftCampaignsData ?? []).filter((draft) => draft.status === "draft")
+  }, [draftCampaignsData])
+
+  const canSaveCampaignDraft = useMemo(
+    () => Boolean(campaignName.trim() && sourceType && leads.length > 0),
+    [campaignName, leads, sourceType],
+  )
+
   const pendingBulkEmails = useMemo(
     () =>
       Object.entries(drafts)
@@ -625,22 +831,28 @@ export default function Leads() {
   const handlePromptSubmit = async () => {
     const trimmedPrompt = promptInput.trim()
     if (!leads.length) {
-      setSourceError('Load leads before generating drafts')
+      setSourceError("Load leads before generating drafts")
       setSheetsError(null)
-      toast.error('Load leads first')
+      toast.error("Load leads first")
       return
     }
     if (!trimmedPrompt) {
-      setSourceError('Add a prompt so the AI knows what to write')
-      toast.error('Describe the outreach email you want before generating drafts')
+      setSourceError("Add a prompt so the AI knows what to write")
+      toast.error("Describe the outreach email you want before generating drafts")
       return
     }
     if (leads.length > 50) {
-      const message = 'The outreach generator can handle up to 50 leads per batch. Narrow your range before continuing.'
+      const message = "The outreach generator can handle up to 50 leads per batch. Narrow your range before continuing."
       setSourceError(message)
       toast.error(message)
       return
     }
+
+    type DraftChunk = { email: string; subject: string; bodyHtml: string; bodyText: string }
+    type StreamEvent =
+      | { type: "status"; phase: "working" | "generating" | "finalizing"; total: number; completed: number }
+      | { type: "done"; drafts: DraftChunk[] }
+      | { type: "error"; message: string }
 
     const userMessageId = `user-${Date.now()}`
     const assistantMessageId = `assistant-${Date.now()}`
@@ -654,12 +866,31 @@ export default function Leads() {
     setDrafts({})
     setSourceError(null)
 
-    let cancelSource: CancelTokenSource | null = null
+    const updateAssistant = (content: string, status?: ChatMessage["status"]) => {
+      setChatMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantMessageId ? { ...message, content, ...(status ? { status } : {}) } : message,
+        ),
+      )
+    }
+
+    const phaseMessage = (event: Extract<StreamEvent, { type: "status" }>) => {
+      if (event.phase === "working") {
+        return "Working on your request…"
+      }
+      if (event.phase === "generating") {
+        return `Generating emails (${event.completed}/${event.total})…`
+      }
+      return "Finalizing your drafts…"
+    }
+
+    let controller: AbortController | null = null
     try {
-      cancelSource = createCancelSource(generateCancelSourceRef)
-      const response = await axios.post<{ drafts: Array<{ email: string; subject: string; bodyHtml: string; bodyText: string }> }>(
-        '/api/email/outreach/draft',
-        {
+      controller = createAbortController(generateCancelSourceRef)
+      const response = await fetch("/api/email/outreach/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           leads: leads.map((lead) => ({
             email: lead.email,
             firstName: lead.firstName,
@@ -669,23 +900,81 @@ export default function Leads() {
             role: lead.role,
           })),
           sender: {
-            name: gmailStatus?.emailAddress?.split('@')[0] || undefined,
+            name: gmailStatus?.emailAddress?.split("@")[0] || undefined,
             prompt: trimmedPrompt,
           },
-        },
-        { cancelToken: cancelSource.token },
-      )
+        }),
+        signal: controller.signal,
+      })
 
-      const generated = response.data.drafts ?? []
+      if (!response.ok) {
+        let errorMessage = "Failed to generate outreach drafts"
+        try {
+          const payload = (await response.json()) as { error?: string }
+          if (payload?.error) {
+            errorMessage = payload.error
+          }
+        } catch {
+          // ignore json errors
+        }
+        throw new Error(errorMessage)
+      }
+
+      if (!response.body) {
+        throw new Error("Streaming responses are not supported in this browser.")
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      let streamedDrafts: DraftChunk[] = []
+
+      const processLine = (line: string) => {
+        if (!line) return
+        let event: StreamEvent
+        try {
+          event = JSON.parse(line)
+        } catch {
+          console.warn("Skipping malformed stream chunk:", line)
+          return
+        }
+        if (event.type === "status") {
+          updateAssistant(phaseMessage(event))
+          return
+        }
+        if (event.type === "error") {
+          throw new Error(event.message || "Failed to generate outreach drafts")
+        }
+        if (event.type === "done") {
+          streamedDrafts = Array.isArray(event.drafts) ? event.drafts : []
+        }
+      }
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done })
+          let newlineIndex = buffer.indexOf("\n")
+          while (newlineIndex >= 0) {
+            const line = buffer.slice(0, newlineIndex).trim()
+            buffer = buffer.slice(newlineIndex + 1)
+            processLine(line)
+            newlineIndex = buffer.indexOf("\n")
+          }
+        }
+        if (done) {
+          buffer += decoder.decode()
+          if (buffer.trim()) {
+            processLine(buffer.trim())
+          }
+          break
+        }
+      }
+
+      const generated = streamedDrafts ?? []
       if (!generated.length) {
-        setChatMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessageId
-              ? { ...message, status: "error", content: "I couldn't generate any drafts. Try adjusting your prompt and run it again." }
-              : message,
-          ),
-        )
-        toast.error('No drafts were generated. Try refining your prompt.')
+        updateAssistant("I couldn't generate any drafts. Try adjusting your prompt and run it again.", "error")
+        toast.error("No drafts were generated. Try refining your prompt.")
         return
       }
 
@@ -695,7 +984,7 @@ export default function Leads() {
           subject: item.subject.trim(),
           bodyHtml: item.bodyHtml,
           bodyText: item.bodyText,
-          status: 'pending',
+          status: "pending",
         }
         return acc
       }, {})
@@ -705,39 +994,24 @@ export default function Leads() {
       const missingCount = leads.length - generated.length
       const summary =
         missingCount > 0
-          ? `Generated ${generated.length} drafts. ${missingCount} lead${missingCount === 1 ? '' : 's'} were skipped—check their data and try again if needed.`
+          ? `Generated ${generated.length} drafts. ${missingCount} lead${missingCount === 1 ? "" : "s"} were skipped—check their data and try again if needed.`
           : `Generated drafts for all ${generated.length} leads.`
 
-      setChatMessages((prev) =>
-        prev.map((message) =>
-          message.id === assistantMessageId
-            ? { ...message, status: "success", content: summary }
-            : message,
-        ),
-      )
+      updateAssistant(summary, "success")
       toast.success(`Prepared ${generated.length} drafts`)
     } catch (error) {
-      if (axios.isCancel(error)) {
+      if (error instanceof DOMException && error.name === "AbortError") {
         setChatMessages((prev) => prev.filter((message) => message.id !== assistantMessageId))
         return
       }
 
-      console.error('Draft generation error:', error)
-      const message =
-        axios.isAxiosError(error)
-          ? (error.response?.data as { error?: string })?.error || error.message || 'Failed to generate outreach drafts'
-          : 'Failed to generate outreach drafts'
+      console.error("Draft generation error:", error)
+      const message = error instanceof Error ? error.message : "Failed to generate outreach drafts"
       setSourceError(message)
-      setChatMessages((prev) =>
-        prev.map((chat) =>
-          chat.id === assistantMessageId
-            ? { ...chat, status: "error", content: message }
-            : chat,
-        ),
-      )
+      updateAssistant(message, "error")
       toast.error(message)
     } finally {
-      if (cancelSource && generateCancelSourceRef.current === cancelSource) {
+      if (controller && generateCancelSourceRef.current === controller) {
         generateCancelSourceRef.current = null
       }
       setIsGeneratingFromPrompt(false)
@@ -804,6 +1078,7 @@ export default function Leads() {
       const successMessage = mode === 'bulk' ? 'All outreach emails were sent successfully.' : 'Email sent successfully.'
       toast.success(successMessage)
       setSourceError(null)
+      await syncDraftStatus('sent')
       await refetchOutreachJobs().catch(() => undefined)
     } catch (error) {
       if (axios.isCancel(error)) {
@@ -972,6 +1247,9 @@ export default function Leads() {
     },
     isGeneratingFromPrompt,
     hasDrafts,
+    savedPrompts,
+    savedSignatures,
+    onSavePromptSnippet: handleSavePromptSnippet,
     onPrevious: () => {
       setSourceError(null)
       setStep(1)
@@ -996,6 +1274,9 @@ export default function Leads() {
     onBulkDialogChange: setBulkDialogOpen,
     confirmBulkSend,
     onPreviewDraft: setPreviewEmail,
+    onSaveDraftCampaign: handleSaveCampaignDraft,
+    savingDraftCampaign: savingCampaignDraft,
+    canSaveDraftCampaign: canSaveCampaignDraft,
     isGeneratingFromPrompt,
     onBack: () => {
       setSourceError(null)
@@ -1069,10 +1350,15 @@ export default function Leads() {
 
       <OutreachHistory
         jobsLoading={jobsLoading}
+        draftsLoading={draftsLoading}
+        draftCampaigns={draftCampaigns}
+        deletingDraftId={deletingDraftId}
         manualCampaigns={manualCampaigns}
         filteredCampaigns={filteredCampaigns}
         legacyJobs={legacyJobs}
         filteredLegacyJobs={filteredLegacyJobs}
+        onResumeDraft={handleResumeCampaignDraft}
+        onDeleteDraft={handleDeleteCampaignDraft}
         onRefresh={() => refetchOutreachJobs().catch(() => undefined)}
         onExportAll={() => handleExportOutreachedCsv(undefined, { fileLabel: "outreached-emails" })}
         onExportCampaign={handleExportOutreachedCsv}

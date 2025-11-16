@@ -15,14 +15,14 @@ type RouteContext = {
 const resolveIdParam = (value: string | string[] | undefined): string | null =>
   Array.isArray(value) ? value[0] ?? null : typeof value === 'string' ? value : null
 
-const getCampaignId = async (context: RouteContext): Promise<string | null> => {
-  const params = await context.params
+const getCampaignId = async (paramsPromise: RouteContext["params"]): Promise<string | null> => {
+  const params = await paramsPromise
   return resolveIdParam(params?.id)
 }
 
 export async function GET(request: NextRequest, context: RouteContext) {
   try {
-    const campaignId = await getCampaignId(context)
+    const campaignId = await getCampaignId(context.params)
     if (!campaignId) {
       return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
     }
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
-    const campaignId = await getCampaignId(context)
+    const campaignId = await getCampaignId(context.params)
     if (!campaignId) {
       return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
     }
@@ -134,7 +134,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
 export async function DELETE(request: NextRequest, context: RouteContext) {
   try {
-    const campaignId = await getCampaignId(context)
+    const campaignId = await getCampaignId(context.params)
     if (!campaignId) {
       return NextResponse.json({ error: 'Invalid campaign id' }, { status: 400 })
     }

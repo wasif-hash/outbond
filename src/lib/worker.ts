@@ -13,7 +13,8 @@ import {
   TokenBucketRateLimit,
 } from './rate-limit'
 
-import { createAuthorizedClient } from './google-sheet/google-sheet'
+import { createAuthorizedClient, getSpreadsheetInfo } from './google-sheet/google-sheet'
+import type { OAuth2Client } from 'google-auth-library'
 import { writeLeadsToSheet } from './google-sheet/google-sheet-writer'
 
 const parsedPreparationConcurrency = Number(process.env.LEAD_PREPARATION_CONCURRENCY || '5')
@@ -368,12 +369,24 @@ export class LeadFetchWorker {
           googleToken.refreshToken
         )
 
-        console.log(`📊 Writing ${aggregatedSheetRows.length} leads to Google Sheet: ${campaign.googleSheet.title}`)
+        if (!campaign.googleSheet.range || !campaign.googleSheet.sheetTitle) {
+          const metadata = await this.ensureSheetMetadata(campaign.googleSheet, oauth2Client)
+          campaign.googleSheet.sheetTitle = metadata.sheetTitle
+          campaign.googleSheet.range = metadata.range
+        }
+
+        const storedRange = campaign.googleSheet.range
+          || (campaign.googleSheet.sheetTitle ? `${campaign.googleSheet.sheetTitle}!A:P` : 'Sheet1')
+        const sheetRange = storedRange.includes('!') ? storedRange : `${storedRange}!A:P`
+
+        console.log(
+          `📊 Writing ${aggregatedSheetRows.length} leads to Google Sheet: ${campaign.googleSheet.title} (range: ${sheetRange})`,
+        )
 
         const writtenCount = await writeLeadsToSheet(
           oauth2Client,
           campaign.googleSheet.spreadsheetId,
-          'Sheet1!A:P',
+          sheetRange,
           aggregatedSheetRows
         )
 
@@ -1020,6 +1033,42 @@ export class LeadFetchWorker {
       dbData,
       sheetRow,
     }
+  }
+
+  private formatSheetRange(title: string): { sheetTitle: string; range: string } {
+    const normalizedTitle = title?.trim() || 'Sheet1'
+    const escapedTitle = normalizedTitle.replace(/'/g, "''")
+    const quotedTitle = `'${escapedTitle}'`
+    return {
+      sheetTitle: normalizedTitle,
+      range: `${quotedTitle}!A:P`,
+    }
+  }
+
+  private async ensureSheetMetadata(
+    googleSheet: { id: string; spreadsheetId: string; sheetTitle: string | null; range: string | null },
+    oauth2Client: OAuth2Client,
+  ): Promise<{ sheetTitle: string; range: string }> {
+    const sheetInfo = await getSpreadsheetInfo(oauth2Client, googleSheet.spreadsheetId)
+    const targetTitle = googleSheet.sheetTitle?.trim()
+      || sheetInfo.sheets?.[0]?.properties?.title
+      || 'Sheet1'
+    const formatted = this.formatSheetRange(targetTitle)
+
+    const primarySheet = sheetInfo.sheets?.find(
+      sheet => sheet.properties?.title?.trim() === formatted.sheetTitle,
+    ) ?? sheetInfo.sheets?.[0]
+
+    await prisma.googleSheet.update({
+      where: { id: googleSheet.id },
+      data: {
+        sheetTitle: formatted.sheetTitle,
+        sheetId: primarySheet?.properties?.sheetId ?? null,
+        range: formatted.range,
+      },
+    })
+
+    return formatted
   }
 
   private buildLookupKey(

@@ -1,44 +1,48 @@
-import { NextResponse, NextRequest } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server'
 
-import { verifyAuth } from '@/lib/auth';
-import { prisma } from '@/lib/prisma';
+import { verifyAuth } from '@/lib/auth'
+import { prisma } from '@/lib/prisma'
 import {
   GoogleDriveApiDisabledError,
   createAuthorizedClient,
   getUserSpreadsheets,
   refreshTokenIfNeeded,
-} from '@/lib/google-sheet/google-sheet';
-import { GoogleSheetsListResponse } from '@/types/google-sheet';
+} from '@/lib/google-sheet/google-sheet'
+import { GoogleSheetsListResponse } from '@/types/google-sheet'
+
+const mapSheetsForResponse = (sheets: Array<{ spreadsheetId: string; title: string; spreadsheetUrl: string }>) =>
+  sheets.map((sheet) => ({
+    id: sheet.spreadsheetId,
+    name: sheet.title,
+    webViewLink: sheet.spreadsheetUrl,
+  }))
 
 export async function GET(request: NextRequest) {
-  let userId: string | null = null;
+  let userId: string | null = null
 
   try {
-    const authResult = await verifyAuth(request);
+    const authResult = await verifyAuth(request)
     if (!authResult.success || !authResult.user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    userId = authResult.user.userId;
+    userId = authResult.user.userId
 
     const tokenRecord = await prisma.googleOAuthToken.findUnique({
       where: { userId },
-    });
+    })
 
     if (!tokenRecord) {
-      return NextResponse.json({ error: 'Google account not connected' }, { status: 400 });
+      return NextResponse.json({ error: 'Google account not connected' }, { status: 400 })
     }
 
-    const oauth2Client = await createAuthorizedClient(
-      tokenRecord.accessToken,
-      tokenRecord.refreshToken
-    );
+    const oauth2Client = await createAuthorizedClient(tokenRecord.accessToken, tokenRecord.refreshToken)
 
     if (new Date() >= tokenRecord.expiresAt) {
-      await refreshTokenIfNeeded(oauth2Client, tokenRecord, userId);
+      await refreshTokenIfNeeded(oauth2Client, tokenRecord, userId)
     }
 
-    const spreadsheets = await getUserSpreadsheets(oauth2Client);
+    const spreadsheets = await getUserSpreadsheets(oauth2Client)
 
     for (const spreadsheet of spreadsheets) {
       await prisma.googleSheet.upsert({
@@ -60,31 +64,34 @@ export async function GET(request: NextRequest) {
           title: spreadsheet.name,
           lastUsedAt: new Date(),
         },
-      });
+      })
     }
 
-    const response: GoogleSheetsListResponse = { spreadsheets };
-    return NextResponse.json(response);
+    const storedSheets = await prisma.googleSheet.findMany({
+      where: { userId },
+      orderBy: { lastUsedAt: 'desc' },
+    })
+
+    const response: GoogleSheetsListResponse = {
+      spreadsheets: mapSheetsForResponse(storedSheets),
+    }
+    return NextResponse.json(response)
   } catch (error) {
-    console.error('Get sheets error:', error);
+    console.error('Get sheets error:', error)
 
     if (error instanceof GoogleDriveApiDisabledError && userId) {
       const storedSheets = await prisma.googleSheet.findMany({
         where: { userId },
         orderBy: { lastUsedAt: 'desc' },
-      });
+      })
 
       if (storedSheets.length > 0) {
         const response: GoogleSheetsListResponse = {
-          spreadsheets: storedSheets.map((sheet) => ({
-            id: sheet.spreadsheetId,
-            name: sheet.title,
-            webViewLink: sheet.spreadsheetUrl,
-          })),
+          spreadsheets: mapSheetsForResponse(storedSheets),
           warning: error.message,
-        };
+        }
 
-        return NextResponse.json(response);
+        return NextResponse.json(response)
       }
 
       return NextResponse.json(
@@ -92,10 +99,10 @@ export async function GET(request: NextRequest) {
           error: error.message,
           requiresDriveEnable: true,
         },
-        { status: 503 }
-      );
+        { status: 503 },
+      )
     }
 
-    return NextResponse.json({ error: 'Failed to fetch sheets' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch sheets' }, { status: 500 })
   }
 }
