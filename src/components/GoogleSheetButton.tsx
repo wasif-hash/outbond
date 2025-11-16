@@ -27,10 +27,6 @@ export default function GoogleSheetsButton() {
   const wasExpiredRef = useRef<boolean>(false);
 
   useEffect(() => {
-    void checkConnectionStatus();
-  }, [checkConnectionStatus]);
-
-  useEffect(() => {
     const isConnected = Boolean(status?.isConnected && !status?.isExpired);
 
     if (isConnected && lastConnectionRef.current !== true) {

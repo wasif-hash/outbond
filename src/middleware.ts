@@ -13,7 +13,6 @@ export async function middleware(request: NextRequest) {
       request.headers.get('x-real-ip') ||
       'unknown'
     // This would be implemented with Redis in production
-    // For now, we'll just add headers for monitoring
     const response = NextResponse.next()
     response.headers.set('X-Client-IP', ip)
     return response

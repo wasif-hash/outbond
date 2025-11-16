@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
 import type { GmailConnectionStatus } from '@/types/gmail'
 import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
 
-type GmailRequestKey = 'status' | 'connect' | 'disconnect'
+type GmailRequestKey = 'connect' | 'disconnect'
 
 type CachedStatusPayload = {
   status: GmailConnectionStatus
@@ -17,10 +18,10 @@ type CachedStatusPayload = {
 const CACHE_KEY = 'gmail-status-cache'
 const CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 const MEMORY_CACHE_TTL_MS = CACHE_TTL_MS
+const FETCH_ERROR_MESSAGE = 'Unable to load Gmail status'
 
 let cachedStatusInMemory: GmailConnectionStatus | null = null
 let cachedFetchedAtInMemory: number | null = null
-let statusFetchPromise: Promise<GmailConnectionStatus | null> | null = null
 
 const readCachedStatus = (): CachedStatusPayload | null => {
   if (typeof window === 'undefined') {
@@ -62,29 +63,61 @@ const clearCachedStatus = () => {
   }
 }
 
+const resolveInitialCache = () => {
+  if (cachedStatusInMemory && cachedFetchedAtInMemory) {
+    const memoryAge = Date.now() - cachedFetchedAtInMemory
+    if (memoryAge < MEMORY_CACHE_TTL_MS) {
+      return {
+        status: cachedStatusInMemory,
+        fetchedAt: cachedFetchedAtInMemory,
+      }
+    }
+  }
+
+  const cached = readCachedStatus()
+  if (cached) {
+    cachedStatusInMemory = cached.status
+    cachedFetchedAtInMemory = cached.fetchedAt
+    return cached
+  }
+
+  return { status: null, fetchedAt: null }
+}
+
+const resolveErrorMessage = (error: unknown, fallback: string) => {
+  if (axios.isAxiosError(error)) {
+    return (
+      (error.response?.data as { error?: string; message?: string } | undefined)?.error ??
+      (error.response?.data as { error?: string; message?: string } | undefined)?.message ??
+      error.message ??
+      fallback
+    )
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return fallback
+}
+
 export function useGmail() {
-  const [statusState, setStatusState] = useState<GmailConnectionStatus | null>(() => cachedStatusInMemory)
+  const [{ status: initialStatus, fetchedAt: initialFetchedAt }] = useState(resolveInitialCache)
   const [loading, setLoading] = useState(false)
-  const [statusLoading, setStatusLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [lastFetchedState, setLastFetchedState] = useState<number | null>(() => cachedFetchedAtInMemory)
+  const [lastFetchedState, setLastFetchedState] = useState<number | null>(() => initialFetchedAt ?? null)
 
   const client = useMemo(() => getApiClient(), [])
+  const queryClient = useQueryClient()
   const cancelRef = useRef<Record<GmailRequestKey, CancelTokenSource | null>>({
-    status: null,
     connect: null,
     disconnect: null,
   })
 
-  useEffect(() => {
-    const cancelMap = cancelRef
-    return () => {
-      const tokens = cancelMap.current
-      Object.values(tokens as Record<string, CancelTokenSource | null>)
-        .filter(Boolean)
-        .forEach((source) => (source as CancelTokenSource).cancel('Component unmounted'))
-    }
+  const cancelAllRequests = useCallback(() => {
+    const tokens = cancelRef.current
+    Object.values(tokens).forEach((source) => source?.cancel('Component unmounted'))
   }, [])
+
+  useEffect(() => cancelAllRequests, [cancelAllRequests])
 
   const setCancelSource = useCallback((key: GmailRequestKey) => {
     const existing = cancelRef.current[key]
@@ -101,76 +134,72 @@ export function useGmail() {
       cancelRef.current[key] = null
     }
   }, [])
-  const applyStatus = useCallback((nextStatus: GmailConnectionStatus | null, fetchedAt?: number | null) => {
-    setStatusState(nextStatus)
-    cachedStatusInMemory = nextStatus
-    if (typeof fetchedAt === 'number') {
-      setLastFetchedState(fetchedAt)
-      cachedFetchedAtInMemory = fetchedAt
-    } else if (fetchedAt === null) {
-      setLastFetchedState(null)
-      cachedFetchedAtInMemory = null
+
+  const statusQuery = useQuery<GmailConnectionStatus | null>({
+    queryKey: ['gmail', 'status'],
+    queryFn: async ({ signal }) => {
+      const response = await client.get<GmailConnectionStatus>('/api/gmail/status', { signal })
+      return response.data
+    },
+    initialData: initialStatus,
+    initialDataUpdatedAt: initialFetchedAt ?? undefined,
+    staleTime: CACHE_TTL_MS,
+    gcTime: CACHE_TTL_MS,
+    refetchOnWindowFocus: false,
+  })
+
+  const { data, dataUpdatedAt, status: queryStatus, error: queryError, isFetching, refetch } = statusQuery
+  const status = data ?? null
+  const statusLoading = isFetching
+
+  useEffect(() => {
+    if (queryStatus !== 'success') {
+      return
     }
-  }, [])
+
+    if (status) {
+      const fetchedAt = dataUpdatedAt || Date.now()
+      cachedStatusInMemory = status
+      cachedFetchedAtInMemory = fetchedAt
+      setLastFetchedState(fetchedAt)
+      if (status.isConnected) {
+        writeCachedStatus(status, fetchedAt)
+      } else {
+        clearCachedStatus()
+      }
+    } else {
+      cachedStatusInMemory = null
+      cachedFetchedAtInMemory = null
+      setLastFetchedState(null)
+      clearCachedStatus()
+    }
+  }, [dataUpdatedAt, queryStatus, status])
+
+  useEffect(() => {
+    if (queryStatus === 'error') {
+      if (axios.isCancel(queryError)) {
+        return
+      }
+      setError(resolveErrorMessage(queryError, FETCH_ERROR_MESSAGE))
+    } else if (queryStatus === 'success' && error === FETCH_ERROR_MESSAGE) {
+      setError(null)
+    }
+  }, [error, queryError, queryStatus])
 
   const refreshStatus = useCallback(async () => {
-    if (statusFetchPromise) {
-      return statusFetchPromise
+    if (error === FETCH_ERROR_MESSAGE) {
+      setError(null)
     }
-
-    let cancelSource: CancelTokenSource | null = null
-    setStatusLoading(true)
-
-    statusFetchPromise = (async () => {
-      try {
-        cancelSource = setCancelSource('status')
-        const response = await client.get<GmailConnectionStatus>('/api/gmail/status', {
-          cancelToken: cancelSource.token,
-        })
-        const fetchedAt = Date.now()
-        applyStatus(response.data, fetchedAt)
-        if (response.data.isConnected) {
-          writeCachedStatus(response.data, fetchedAt)
-        } else {
-          clearCachedStatus()
-        }
-        setError(null)
-        return response.data
-      } catch (err) {
-        if (axios.isCancel(err)) {
-          return null
-        }
-        console.error('Failed to load Gmail status:', err)
-        setError('Unable to load Gmail status')
-        return null
-      } finally {
-        setStatusLoading(false)
-        clearCancelSource('status', cancelSource)
-        statusFetchPromise = null
+    try {
+      const result = await refetch({ throwOnError: false })
+      return result.data ?? null
+    } catch (err) {
+      if (!axios.isCancel(err)) {
+        setError(resolveErrorMessage(err, FETCH_ERROR_MESSAGE))
       }
-    })()
-
-    return statusFetchPromise
-  }, [applyStatus, client, clearCancelSource, setCancelSource, setError])
-
-  const ensureStatus = useCallback(async () => {
-    if (cachedStatusInMemory && cachedFetchedAtInMemory) {
-      const memoryAge = Date.now() - cachedFetchedAtInMemory
-      if (memoryAge < MEMORY_CACHE_TTL_MS) {
-        return cachedStatusInMemory
-      }
+      return null
     }
-
-    const cached = readCachedStatus()
-    if (cached) {
-      applyStatus(cached.status, cached.fetchedAt)
-      const ageMs = Date.now() - cached.fetchedAt
-      if (ageMs < CACHE_TTL_MS) {
-        return cached.status
-      }
-    }
-    return refreshStatus()
-  }, [applyStatus, refreshStatus])
+  }, [error, refetch])
 
   const connect = useCallback(async () => {
     let cancelSource: CancelTokenSource | null = null
@@ -213,10 +242,11 @@ export function useGmail() {
         cancelToken: cancelSource.token,
       })
       toast.success('Gmail account disconnected')
-      applyStatus(null, null)
       cachedStatusInMemory = null
       cachedFetchedAtInMemory = null
       clearCachedStatus()
+      setLastFetchedState(null)
+      queryClient.setQueryData(['gmail', 'status'], null)
     } catch (err) {
       if (axios.isCancel(err)) {
         return
@@ -228,14 +258,10 @@ export function useGmail() {
       clearCancelSource('disconnect', cancelSource)
       setLoading(false)
     }
-  }, [applyStatus, client, clearCancelSource, setCancelSource])
-
-  useEffect(() => {
-    ensureStatus().catch(() => undefined)
-  }, [ensureStatus])
+  }, [client, clearCancelSource, queryClient, setCancelSource])
 
   return {
-    status: statusState,
+    status,
     loading,
     statusLoading,
     error,

@@ -1,11 +1,13 @@
 // src/hooks/useCampaignStatus.ts
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
+import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { CampaignStatus } from './useCampaigns'
-import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
+
+import type { CampaignStatus } from './useCampaigns'
+import { getApiClient } from '@/lib/http-client'
 
 type AttemptProgress = {
   page?: number
@@ -14,109 +16,95 @@ type AttemptProgress = {
   leadsWritten?: number
 }
 
+const STATUS_QUERY_KEY = (campaignId: string) => ['campaign-status', campaignId] as const
+
+const enhanceStatus = (data: CampaignStatus): CampaignStatus => {
+  if (!data.latestJob) {
+    return data
+  }
+
+  if (data.latestJob.lastError?.includes('rate limit')) {
+    data.latestJob.status = 'RATE_LIMITED'
+  }
+
+  if (data.latestJob.status === 'RUNNING') {
+    const rawProgress = data.latestJob.latestAttempt?.progress as AttemptProgress | undefined
+    const progress: AttemptProgress = rawProgress ?? {}
+    data.latestJob.progress = {
+      currentPage: progress.page || data.latestJob.totalPages || 1,
+      totalPages:
+        data.latestJob.totalPages || progress.totalPages || Math.max(progress.page || 1, 1),
+      leadsProcessed: data.latestJob.leadsProcessed || progress.leadsProcessed || 0,
+      leadsWritten: data.latestJob.leadsWritten || progress.leadsWritten || 0,
+    }
+  }
+
+  return data
+}
+
+const resolveStatusError = (error: unknown): string => {
+  if (axios.isAxiosError(error)) {
+    return (
+      (error.response?.data as { error?: string } | undefined)?.error ??
+      error.message ??
+      'Unable to load campaign status.'
+    )
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return 'Unable to load campaign status.'
+}
+
 export function useCampaignStatus(campaignId: string, pollingInterval: number = 5000) {
-  const [status, setStatus] = useState<CampaignStatus | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [pollingEnabled, setPollingEnabled] = useState(() => Boolean(campaignId))
   const [error, setError] = useState<string | null>(null)
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
   const previousStatusRef = useRef<string | null>(null)
   const previousErrorRef = useRef<string | null>(null)
   const previousLeadsRef = useRef<number>(0)
   const previousFetchErrorRef = useRef<string | null>(null)
   const client = useMemo(() => getApiClient(), [])
-  const cancelRef = useRef<CancelTokenSource | null>(null)
 
-  const fetchStatus = async () => {
-    let cancelSource: CancelTokenSource | null = null
-    try {
-      setLoading(true)
-      setError(null)
+  useEffect(() => {
+    setPollingEnabled(Boolean(campaignId))
+  }, [campaignId])
 
-      if (cancelRef.current) {
-        cancelRef.current.cancel('Superseded status request')
-      }
-      cancelSource = createCancelSource()
-      cancelRef.current = cancelSource
-
-      const { data } = await client.get<CampaignStatus>(`/api/campaigns/${campaignId}/status`, {
-        cancelToken: cancelSource.token,
+  const statusQuery = useQuery<CampaignStatus>({
+    queryKey: STATUS_QUERY_KEY(campaignId),
+    queryFn: async ({ signal }) => {
+      const response = await client.get<CampaignStatus>(`/api/campaigns/${campaignId}/status`, {
+        signal,
       })
+      return enhanceStatus(response.data)
+    },
+    enabled: Boolean(campaignId),
+    refetchInterval: pollingEnabled ? pollingInterval : false,
+    refetchOnWindowFocus: false,
+  })
 
-      // Add additional Apollo-specific status processing
-      if (data.latestJob) {
-        // Handle rate limit status
-        if (data.latestJob.lastError?.includes('rate limit')) {
-          data.latestJob.status = 'RATE_LIMITED'
-        }
+  const status = statusQuery.data ?? null
+  const loading = statusQuery.isPending || (statusQuery.isFetching && !statusQuery.data)
 
-        // Process progress data
-        if (data.latestJob.status === 'RUNNING') {
-          const rawProgress = data.latestJob.latestAttempt?.progress as AttemptProgress | undefined
-          const progress: AttemptProgress = rawProgress ?? {}
-          data.latestJob.progress = {
-            currentPage: progress.page || data.latestJob.totalPages || 1,
-            totalPages:
-              data.latestJob.totalPages || progress.totalPages || Math.max(progress.page || 1, 1),
-            leadsProcessed: data.latestJob.leadsProcessed || progress.leadsProcessed || 0,
-            leadsWritten: data.latestJob.leadsWritten || progress.leadsWritten || 0,
-          }
-        }
-      }
-
-      setStatus(data)
+  useEffect(() => {
+    if (!statusQuery.error) {
       previousFetchErrorRef.current = null
-    } catch (err) {
-      if (axios.isCancel(err)) {
-        return
+      if (!statusQuery.isFetching) {
+        setError(null)
       }
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
-      setError(errorMessage)
-      if (previousFetchErrorRef.current !== errorMessage) {
-        toast.error(errorMessage)
-        previousFetchErrorRef.current = errorMessage
-      }
-    } finally {
-      setLoading(false)
-      if (cancelSource && cancelRef.current === cancelSource) {
-        cancelRef.current = null
-      }
-    }
-  }
-
-  const startPolling = () => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
+      return
     }
 
-    fetchStatus() // Initial fetch
-    intervalRef.current = setInterval(fetchStatus, pollingInterval)
-  }
-
-  const stopPolling = () => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-      intervalRef.current = null
-    }
-  }
-
-  useEffect(() => {
-    if (campaignId) {
-      startPolling()
+    if (axios.isCancel(statusQuery.error)) {
+      return
     }
 
-    return () => {
-      stopPolling()
-      cancelRef.current?.cancel('Component unmounted')
+    const message = resolveStatusError(statusQuery.error)
+    setError(message)
+    if (previousFetchErrorRef.current !== message) {
+      toast.error(message)
+      previousFetchErrorRef.current = message
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [campaignId, pollingInterval])
-
-  // Stop polling if job is completed or failed
-  useEffect(() => {
-    if (status?.latestJob?.status === 'SUCCEEDED' || status?.latestJob?.status === 'FAILED') {
-      stopPolling()
-    }
-  }, [status?.latestJob?.status])
+  }, [statusQuery.error, statusQuery.isFetching])
 
   useEffect(() => {
     if (!status?.latestJob) {
@@ -137,20 +125,20 @@ export function useCampaignStatus(campaignId: string, pollingInterval: number = 
     if (jobStatus && jobStatus !== previousStatusRef.current) {
       if (jobStatus === 'RUNNING') {
         toast.success(`"${campaignName}" is now running`, {
-          description: 'Fetching fresh leads from Apollo.'
+          description: 'Fetching fresh leads from Apollo.',
         })
       }
 
       if (jobStatus === 'SUCCEEDED') {
         toast.success(`"${campaignName}" finished`, {
-          description: `Pulled ${leadsWritten.toLocaleString()} leads. 🎉`
+          description: `Pulled ${leadsWritten.toLocaleString()} leads. 🎉`,
         })
       }
 
       if (jobStatus === 'FAILED') {
         const failureReason = status.latestJob.lastError || 'Unknown error'
         toast.error(`"${campaignName}" failed`, {
-          description: failureReason
+          description: failureReason,
         })
       }
     }
@@ -158,7 +146,7 @@ export function useCampaignStatus(campaignId: string, pollingInterval: number = 
     const currentError = status.latestJob.lastError ?? null
     if (currentError && currentError !== previousErrorRef.current && jobStatus !== 'FAILED') {
       toast.error(`Issue in "${campaignName}"`, {
-        description: currentError
+        description: currentError,
       })
     }
 
@@ -166,7 +154,7 @@ export function useCampaignStatus(campaignId: string, pollingInterval: number = 
       const delta = leadsWritten - previousLeadsRef.current
       if (delta >= 50 || previousLeadsRef.current === 0) {
         toast('Leads updated', {
-          description: `${campaignName}: ${leadsWritten.toLocaleString()} saved so far.`
+          description: `${campaignName}: ${leadsWritten.toLocaleString()} saved so far.`,
         })
       }
     }
@@ -176,11 +164,30 @@ export function useCampaignStatus(campaignId: string, pollingInterval: number = 
     previousLeadsRef.current = leadsWritten
   }, [status])
 
+  useEffect(() => {
+    if (!pollingEnabled) {
+      return
+    }
+    if (status?.latestJob?.status === 'SUCCEEDED' || status?.latestJob?.status === 'FAILED') {
+      setPollingEnabled(false)
+    }
+  }, [pollingEnabled, status?.latestJob?.status])
+
+  const stopPolling = () => {
+    setPollingEnabled(false)
+  }
+
+  const startPolling = () => {
+    if (campaignId) {
+      setPollingEnabled(true)
+    }
+  }
+
   return {
     status,
     loading,
     error,
-    refetch: fetchStatus,
+    refetch: statusQuery.refetch,
     startPolling,
     stopPolling,
   }

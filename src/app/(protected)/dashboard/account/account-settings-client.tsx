@@ -1,8 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useState, useTransition, type ChangeEvent, type FormEvent } from 'react'
 import dynamic from 'next/dynamic'
-import axios from 'axios'
 import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,9 +12,9 @@ import { toast } from 'sonner'
 import { Eye, EyeOff, ShieldCheck, Loader2, LockKeyhole, Mail, PlugZap } from 'lucide-react'
 
 import type { AuthUser } from '@/lib/auth'
-import { getApiClient } from '@/lib/http-client'
 import { useGmail } from '@/hooks/useGmail'
 import { cn } from '@/lib/utils'
+import { changePasswordAction } from '@/actions/auth'
 
 const GmailConnectPanel = dynamic(
   () => import('@/components/gmail/GmailConnectPanel').then((mod) => ({ default: mod.GmailConnectPanel })),
@@ -32,6 +31,7 @@ const GmailConnectPanel = dynamic(
 
 type AccountSettingsClientProps = {
   user: AuthUser
+  googleSheetsStatus: GoogleSheetsStatus | null
 }
 
 type PasswordFormState = {
@@ -53,7 +53,7 @@ type GoogleSheetsStatus = {
   expiresAt: string | null
 }
 
-export function AccountSettingsClient({ user }: AccountSettingsClientProps) {
+export function AccountSettingsClient({ user, googleSheetsStatus }: AccountSettingsClientProps) {
   const [formState, setFormState] = useState<PasswordFormState>(initialPasswordFormState)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showPassword, setShowPassword] = useState({
@@ -61,49 +61,14 @@ export function AccountSettingsClient({ user }: AccountSettingsClientProps) {
     next: false,
     confirm: false
   })
-  const [googleSheetsStatus, setGoogleSheetsStatus] = useState<GoogleSheetsStatus | null>(null)
-  const [googleSheetsLoading, setGoogleSheetsLoading] = useState(true)
-  const [googleSheetsError, setGoogleSheetsError] = useState<string | null>(null)
-  const client = useMemo(() => getApiClient(), [])
+  const [, startTransition] = useTransition()
   const { status: gmailStatus, statusLoading: gmailStatusLoading } = useGmail()
-
-  useEffect(() => {
-    let isMounted = true
-    const fetchStatus = async () => {
-      try {
-        setGoogleSheetsLoading(true)
-        setGoogleSheetsError(null)
-        const { data } = await client.get<GoogleSheetsStatus>('/api/google-sheets/status')
-        if (!isMounted) return
-        setGoogleSheetsStatus(data)
-      } catch (error) {
-        if (!isMounted) return
-        console.error('Failed to load Google Sheets status:', error)
-        const message = axios.isAxiosError(error)
-          ? (error.response?.data?.error as string) || error.message || 'Unable to load Google Sheets status.'
-          : error instanceof Error
-            ? error.message
-            : 'Unable to load Google Sheets status.'
-        setGoogleSheetsError(message)
-      } finally {
-        if (isMounted) {
-          setGoogleSheetsLoading(false)
-        }
-      }
-    }
-
-    fetchStatus().catch(() => undefined)
-
-    return () => {
-      isMounted = false
-    }
-  }, [client])
 
   const handlePasswordChange = (field: keyof PasswordFormState) => (event: ChangeEvent<HTMLInputElement>) => {
     setFormState((prev) => ({ ...prev, [field]: event.target.value }))
   }
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!formState.currentPassword || !formState.newPassword || !formState.confirmPassword) {
       toast.error('Please complete all password fields.')
@@ -116,27 +81,24 @@ export function AccountSettingsClient({ user }: AccountSettingsClientProps) {
     }
 
     setIsSubmitting(true)
-
-    try {
-      const { data } = await client.patch('/api/account/password', {
+    startTransition(() => {
+      changePasswordAction({
         currentPassword: formState.currentPassword,
         newPassword: formState.newPassword,
-        confirmPassword: formState.confirmPassword
+        confirmPassword: formState.confirmPassword,
       })
-
-      toast.success(data?.message ?? 'Password updated successfully.')
-      setFormState(initialPasswordFormState)
-    } catch (error) {
-      console.error('Failed to update password:', error)
-      const message = axios.isAxiosError(error)
-        ? (error.response?.data?.error as string) || error.message || 'Unable to update password.'
-        : error instanceof Error
-          ? error.message
-          : 'Unable to update password.'
-      toast.error(message)
-    } finally {
-      setIsSubmitting(false)
-    }
+        .then((result) => {
+          toast.success(result.message)
+          setFormState(initialPasswordFormState)
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : 'Unable to update password.'
+          toast.error(message)
+        })
+        .finally(() => {
+          setIsSubmitting(false)
+        })
+    })
   }
 
   const gmailConnectionLabel = gmailStatus?.isConnected
@@ -311,45 +273,40 @@ export function AccountSettingsClient({ user }: AccountSettingsClientProps) {
                     Sync campaign data with connected spreadsheets.
                   </p>
                 </div>
-                {googleSheetsLoading ? (
-                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                ) : (
-                  <ShieldCheck
-                    className={cn(
-                      "h-5 w-5",
-                      googleSheetsStatus?.isConnected ? "text-emerald-500" : "text-muted-foreground"
-                    )}
-                  />
-                )}
+                <ShieldCheck
+                  className={cn(
+                    "h-5 w-5",
+                    googleSheetsStatus?.isConnected ? "text-emerald-500" : "text-muted-foreground"
+                  )}
+                />
               </div>
 
-              {googleSheetsError ? (
-                <p className="text-xs text-destructive">{googleSheetsError}</p>
-              ) : (
-                <div className="flex flex-col gap-1 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <Badge
-                      variant={googleSheetsStatus?.isConnected ? 'positive' : 'secondary'}
-                      className={cn(
-                        'flex items-center gap-1',
-                        googleSheetsStatus?.isConnected ? 'bg-emerald-500 text-white border-transparent hover:bg-emerald-500/90' : ''
-                      )}
-                    >
-                      {googleSheetsStatus?.isConnected ? 'Connected' : 'Not Connected'}
-                    </Badge>
-                    <span>{googleSheetsConnectionLabel}</span>
-                  </div>
-                  {googleSheetsStatus?.connectedAt && (
-                    <span className="text-xs text-muted-foreground">
-                      Connected on{' '}
-                      {new Date(googleSheetsStatus.connectedAt).toLocaleString()}
-                    </span>
-                  )}
-                  {googleSheetsStatus?.isExpired && (
-                    <span className="text-xs text-destructive">Connection expired. Please reconnect.</span>
-                  )}
+              <div className="flex flex-col gap-1 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={googleSheetsStatus?.isConnected ? 'positive' : 'secondary'}
+                    className={cn(
+                      'flex items-center gap-1',
+                      googleSheetsStatus?.isConnected ? 'bg-emerald-500 text-white border-transparent hover:bg-emerald-500/90' : ''
+                    )}
+                  >
+                    {googleSheetsStatus?.isConnected ? 'Connected' : 'Not Connected'}
+                  </Badge>
+                  <span>{googleSheetsConnectionLabel}</span>
                 </div>
-              )}
+                {googleSheetsStatus?.connectedAt ? (
+                  <span className="text-xs text-muted-foreground">
+                    Connected on {new Date(googleSheetsStatus.connectedAt).toLocaleString()}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    {googleSheetsStatus?.isConnected ? 'Connection active' : 'No sheet connected'}
+                  </span>
+                )}
+                {googleSheetsStatus?.isExpired && (
+                  <span className="text-xs text-destructive">Connection expired. Please reconnect.</span>
+                )}
+              </div>
 
               <div className="flex flex-wrap items-center gap-2 pt-2">
                 <Button

@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 
 import { getCurrentUser } from '@/lib/auth'
+import { getGoogleSheetsStatus } from '@/actions/google-sheets'
 
 import { AccountSettingsClient } from './account-settings-client'
 
@@ -13,5 +14,7 @@ export default async function AccountSettingsPage() {
     redirect('/login')
   }
 
-  return <AccountSettingsClient user={user} />
+  const googleSheetsStatus = await getGoogleSheetsStatus()
+
+  return <AccountSettingsClient user={user} googleSheetsStatus={googleSheetsStatus} />
 }

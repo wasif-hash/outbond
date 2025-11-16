@@ -1,13 +1,9 @@
 "use client"
 
 import { useMemo } from "react"
-import { useQuery } from "@tanstack/react-query"
 import { ArrowDownIcon, ArrowUpIcon, MinusIcon } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { LoaderThree } from "@/components/ui/loader"
-import { getApiClient } from "@/lib/http-client"
-import { useAuth } from "@/hooks/useAuth"
 import type { DashboardAnalyticsResponse, DashboardActivityItem } from "@/types/dashboard"
 
 type TrendDirection = "up" | "down" | "neutral"
@@ -85,29 +81,14 @@ const getActivityAccent = (type: DashboardActivityItem["type"]) => {
   }
 }
 
-export function DashboardClient() {
-  const client = useMemo(() => getApiClient(), [])
-  const { isAdmin } = useAuth()
+type DashboardClientProps = {
+  analytics: DashboardAnalyticsResponse
+  isAdmin: boolean
+}
 
-  const {
-    data: analytics,
-    isLoading,
-    isFetching,
-    error,
-  } = useQuery<DashboardAnalyticsResponse>({
-    queryKey: ["dashboard-analytics"],
-    queryFn: async () => {
-      const response = await client.get<DashboardAnalyticsResponse>("/api/dashboard/analytics")
-      return response.data
-    },
-    staleTime: 1000 * 60 * 5,
-    refetchOnWindowFocus: false,
-  })
+export function DashboardClient({ analytics, isAdmin }: DashboardClientProps) {
 
   const chartData = useMemo(() => {
-    if (!analytics) {
-      return []
-    }
     const combined = new Map<
       string,
       {
@@ -165,17 +146,17 @@ export function DashboardClient() {
       {
         key: "leads",
         title: "New Leads",
-        value: formatNumber(analytics?.metrics.leadsWritten ?? (isLoading ? null : 0)),
+        value: formatNumber(analytics.metrics.leadsWritten ?? 0),
         trend: leadTrendChange.trend,
-        changeLabel: isLoading ? "Loading…" : leadTrendChange.label,
+        changeLabel: leadTrendChange.label,
         description: "Leads written to Google Sheets",
       },
       {
         key: "outreach",
         title: "Outreached Emails",
-        value: formatNumber(analytics?.metrics.outreachEmailsSent ?? (isLoading ? null : 0)),
+        value: formatNumber(analytics.metrics.outreachEmailsSent ?? 0),
         trend: outreachTrendChange.trend,
-        changeLabel: isLoading ? "Loading…" : outreachTrendChange.label,
+        changeLabel: outreachTrendChange.label,
         description: "Sent via manual outreach",
       },
       {
@@ -202,23 +183,15 @@ export function DashboardClient() {
       metrics.push({
         key: "users",
         title: "Active Users",
-        value: formatNumber(analytics?.metrics.userCount ?? (isLoading ? null : 0)),
+        value: formatNumber(analytics.metrics.userCount ?? 0),
         trend: "neutral",
-        changeLabel: isLoading ? "Loading…" : "Directory synced",
+        changeLabel: "Directory synced",
         description: "Total users with dashboard access",
       })
     }
 
     return metrics
-  }, [
-    analytics,
-    isAdmin,
-    isLoading,
-    leadTrendChange.label,
-    leadTrendChange.trend,
-    outreachTrendChange.label,
-    outreachTrendChange.trend,
-  ])
+  }, [analytics, isAdmin, leadTrendChange, outreachTrendChange])
 
   return (
     <div className="p-6 space-y-6">
@@ -226,12 +199,6 @@ export function DashboardClient() {
         <h1 className="text-3xl font-mono font-bold text-foreground">Dashboard</h1>
         <p className="text-muted-foreground mt-1">System overview and performance metrics</p>
       </div>
-
-      {error ? (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
-          Unable to load analytics right now. Please try again shortly.
-        </div>
-      ) : null}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
         {kpiMetrics.map((metric) => (
@@ -271,75 +238,65 @@ export function DashboardClient() {
                 Leads written to sheets vs outreach emails over the last 7 days.
               </p>
             </div>
-            {isFetching ? (
-              <span className="text-xs font-mono uppercase text-muted-foreground">Refreshing…</span>
-            ) : null}
           </CardHeader>
           <CardContent>
-            {isLoading || !analytics ? (
-              <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-                <LoaderThree />
-                Loading analytics…
-              </div>
-            ) : (
-              <>
-                <div className="h-64 flex items-end justify-between space-x-3 px-2">
-                  {chartData.map((point) => {
-                    const leadHeight = Math.round((point.leadCount / maxChartValue) * 100)
-                    const outreachHeight = Math.round((point.outreachCount / maxChartValue) * 100)
-                    const date = new Date(point.date)
-                    const label = dayLabelFormatter.format(date)
-                    return (
-                      <div key={point.date} className="flex flex-1 flex-col items-center gap-2">
-                        <div className="flex h-full w-full items-end gap-1">
+            <>
+              <div className="h-64 flex items-end justify-between space-x-3 px-2">
+                {chartData.map((point) => {
+                  const leadHeight = Math.round((point.leadCount / maxChartValue) * 100)
+                  const outreachHeight = Math.round((point.outreachCount / maxChartValue) * 100)
+                  const date = new Date(point.date)
+                  const label = dayLabelFormatter.format(date)
+                  return (
+                    <div key={point.date} className="flex flex-1 flex-col items-center gap-2">
+                      <div className="flex h-full w-full items-end gap-1">
+                        <div
+                          className="flex-1 rounded-sm bg-muted"
+                          title={`${point.leadCount} leads on ${label}`}
+                        >
                           <div
-                            className="flex-1 rounded-sm bg-muted"
-                            title={`${point.leadCount} leads on ${label}`}
-                          >
-                            <div
-                              className="w-full rounded-sm"
-                              style={{
-                                height: `${leadHeight}%`,
-                                backgroundColor: "hsl(var(--cwt-plum))",
-                              }}
-                            />
-                          </div>
-                          <div
-                            className="flex-1 rounded-sm bg-muted"
-                            title={`${point.outreachCount} emails on ${label}`}
-                          >
-                            <div
-                              className="w-full rounded-sm"
-                              style={{
-                                height: `${outreachHeight}%`,
-                                backgroundColor: "hsl(var(--electric-blue))",
-                              }}
-                            />
-                          </div>
+                            className="w-full rounded-sm"
+                            style={{
+                              height: `${leadHeight}%`,
+                              backgroundColor: "hsl(var(--cwt-plum))",
+                            }}
+                          />
                         </div>
-                        <div className="text-xs font-mono text-muted-foreground">{label}</div>
+                        <div
+                          className="flex-1 rounded-sm bg-muted"
+                          title={`${point.outreachCount} emails on ${label}`}
+                        >
+                          <div
+                            className="w-full rounded-sm"
+                            style={{
+                              height: `${outreachHeight}%`,
+                              backgroundColor: "hsl(var(--electric-blue))",
+                            }}
+                          />
+                        </div>
                       </div>
-                    )
-                  })}
+                      <div className="text-xs font-mono text-muted-foreground">{label}</div>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: "hsl(var(--cwt-plum))" }}
+                  />
+                  Leads written
                 </div>
-                <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="inline-block h-2 w-2 rounded-full"
-                      style={{ backgroundColor: "hsl(var(--cwt-plum))" }}
-                    />
-                    Leads written
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="inline-block h-2 w-2 rounded-full"
-                      style={{ backgroundColor: "hsl(var(--electric-blue))" }}
-                    />
-                    Emails sent
-                  </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ backgroundColor: "hsl(var(--electric-blue))" }}
+                  />
+                  Emails sent
                 </div>
-              </>
-            )}
+              </div>
+            </>
           </CardContent>
         </Card>
 
@@ -348,12 +305,7 @@ export function DashboardClient() {
             <CardTitle className="text-lg font-mono">Live activity</CardTitle>
           </CardHeader>
           <CardContent>
-            {isLoading || !analytics ? (
-              <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-                <LoaderThree />
-                Loading activity…
-              </div>
-            ) : analytics.activity.length === 0 ? (
+            {analytics.activity.length === 0 ? (
               <div className="rounded-md border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
                 No recent activity yet. Run a campaign or send outreach to see live updates.
               </div>

@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useMemo, useCallback, useTransition } from "react"
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { getApiClient } from '@/lib/http-client'
 import { usePathname, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -56,7 +55,6 @@ const navigation: NavItem[] = [
 const accountNavigation: NavItem = { name: "Account", href: "/dashboard/account", icon: UserCircle }
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient())
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
   const [isPending, startTransition] = useTransition()
@@ -107,8 +105,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <QueryClientProvider client={queryClient}>
-    <div className="min-h-screen bg-background">
+    <>
+      <div className="min-h-screen bg-background">
       {/* Mobile sidebar */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
@@ -274,9 +272,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {/* Page content */}
         <main className="min-h-[calc(100vh-4rem)]">
-      {children}
-    </main>
-  </div>
+          {children}
+        </main>
+      </div>
 
       {isPending && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm">
@@ -299,7 +297,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-
-  </QueryClientProvider>
+    </>
   )
 }

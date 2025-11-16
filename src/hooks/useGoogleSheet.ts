@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import axios from 'axios'
 import { toast } from 'sonner'
 import {
@@ -58,10 +58,6 @@ export const useGoogleSheets = () => {
   const [selectedSheet, setSelectedSheet] = useState<SpreadsheetData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [manualLoadingCount, setManualLoadingCount] = useState(0)
-  const [hasFetchedSpreadsheets, setHasFetchedSpreadsheets] = useState<boolean>(() => {
-    return queryClient.getQueryData(SPREADSHEETS_QUERY_KEY) !== undefined
-  })
-  const [autoFetchAttempted, setAutoFetchAttempted] = useState(false)
 
   const beginManualLoading = useCallback(() => {
     setManualLoadingCount((count) => count + 1)
@@ -104,24 +100,23 @@ export const useGoogleSheets = () => {
   const statusQuery = useQuery({
     queryKey: STATUS_QUERY_KEY,
     queryFn: statusQueryFn,
-    enabled: false,
     staleTime: STATUS_STALE_TIME,
     gcTime: STATUS_GC_TIME,
+    refetchOnWindowFocus: false,
   })
+
+  const status = statusQuery.data ?? null
 
   const spreadsheetsQuery = useQuery({
     queryKey: SPREADSHEETS_QUERY_KEY,
     queryFn: spreadsheetsQueryFn,
-    enabled: false,
+    enabled: Boolean(status?.isConnected && !status?.isExpired),
     staleTime: Infinity,
     gcTime: SPREADSHEETS_GC_TIME,
+    refetchOnWindowFocus: false,
   })
-
-  const status = statusQuery.data ?? null
   const spreadsheets = spreadsheetsQuery.data ?? []
 
-  const statusFetching = useIsFetching({ queryKey: STATUS_QUERY_KEY })
-  const spreadsheetsFetching = useIsFetching({ queryKey: SPREADSHEETS_QUERY_KEY })
   const sheetDataFetching = useIsFetching({
     predicate: (query) =>
       Array.isArray(query.queryKey) &&
@@ -129,7 +124,8 @@ export const useGoogleSheets = () => {
       query.queryKey[1] === 'sheetData',
   })
 
-  const loading = manualLoadingCount > 0 || statusFetching > 0 || spreadsheetsFetching > 0 || sheetDataFetching > 0
+  const loading =
+    manualLoadingCount > 0 || statusQuery.isFetching || spreadsheetsQuery.isFetching || sheetDataFetching > 0
 
   const checkConnectionStatus = useCallback(async () => {
     try {
@@ -177,7 +173,6 @@ export const useGoogleSheets = () => {
 
       toast.success('Google Sheets disconnected')
       setSelectedSheet(null)
-      setHasFetchedSpreadsheets(false)
       queryClient.setQueryData(STATUS_QUERY_KEY, null)
       queryClient.removeQueries({ queryKey: SPREADSHEETS_QUERY_KEY, exact: true })
       queryClient.removeQueries({
@@ -202,13 +197,15 @@ export const useGoogleSheets = () => {
       const cachedSheets = queryClient.getQueryData<GoogleSpreadsheet[]>(SPREADSHEETS_QUERY_KEY)
       const hasCachedSheets = Array.isArray(cachedSheets)
       const hasNonEmptyCache = Boolean(cachedSheets && cachedSheets.length > 0)
-      const shouldRefreshRemote = forceRefresh || !hasFetchedSpreadsheets || !hasNonEmptyCache
+      const hasFetchedBefore = Boolean(
+        queryClient.getQueryState<GoogleSpreadsheet[]>(SPREADSHEETS_QUERY_KEY)?.dataUpdatedAt,
+      )
+      const shouldRefreshRemote = forceRefresh || !hasFetchedBefore || !hasNonEmptyCache
       const needsQueryFetch = !hasCachedSheets
       let remoteRequestFailed = false
       let remoteSheets: GoogleSpreadsheet[] | null = null
 
       if (!shouldRefreshRemote && !needsQueryFetch && cachedSheets) {
-        setHasFetchedSpreadsheets(true)
         return cachedSheets
       }
 
@@ -242,8 +239,6 @@ export const useGoogleSheets = () => {
 
         const result = remoteSheets && remoteSheets.length ? remoteSheets : sheets
 
-        setHasFetchedSpreadsheets(true)
-
         if (!remoteRequestFailed) {
           if (forceRefresh) {
             toast.success('Google Sheets library refreshed')
@@ -267,23 +262,8 @@ export const useGoogleSheets = () => {
         endManualLoading()
       }
     },
-    [beginManualLoading, client, endManualLoading, hasFetchedSpreadsheets, queryClient, spreadsheetsQueryFn],
+    [beginManualLoading, client, endManualLoading, queryClient, spreadsheetsQueryFn],
   )
-
-  useEffect(() => {
-    if (!status?.isConnected || status.isExpired) {
-      if (autoFetchAttempted) {
-        setAutoFetchAttempted(false)
-      }
-      return
-    }
-    if (hasFetchedSpreadsheets || autoFetchAttempted) {
-      return
-    }
-    setAutoFetchAttempted(true)
-    void fetchSpreadsheets()
-  }, [autoFetchAttempted, fetchSpreadsheets, hasFetchedSpreadsheets, status?.isConnected, status?.isExpired])
-
   const fetchSheetData = useCallback(
     async (spreadsheetId: string, range?: string) => {
       const queryKey = sheetDataQueryKey(spreadsheetId, range)
@@ -343,6 +323,6 @@ export const useGoogleSheets = () => {
     disconnectGoogleAccount,
     fetchSpreadsheets,
     fetchSheetData,
-    hasFetchedSpreadsheets,
+    hasFetchedSpreadsheets: Boolean(spreadsheetsQuery.dataUpdatedAt),
   }
 }

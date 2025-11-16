@@ -126,7 +126,6 @@ export default function Leads() {
     loading: sheetsLoading,
     error: sheetsError,
     setError: setSheetsError,
-    checkConnectionStatus,
     fetchSpreadsheets,
     fetchSheetData,
   } = useGoogleSheets()
@@ -386,11 +385,6 @@ export default function Leads() {
   }, [])
 
   const { status: gmailStatus } = useGmail()
-
-  useEffect(() => {
-    void checkConnectionStatus()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   useEffect(() => {
     if (sourceType !== "google-sheet") return

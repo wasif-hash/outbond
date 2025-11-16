@@ -1,8 +1,7 @@
 // src/components/CreateCampaignForm.tsx
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
-import axios from 'axios'
+import { useState, useTransition } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,7 +13,7 @@ import { validateCampaignData } from '@/lib/utils'
 import { useGoogleSheets } from '@/hooks/useGoogleSheet'
 import { ConnectionStatus } from '@/components/google-sheet/ConnectionStatus'
 import { ConnectionActions } from '@/components/google-sheet/ConnectionActions'
-import { getApiClient, createCancelSource, CancelTokenSource } from '@/lib/http-client'
+import { createCampaignAction } from '@/actions/campaigns'
 
 interface CreateCampaignFormProps {
   open: boolean
@@ -50,8 +49,7 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
   })
   const [submitting, setSubmitting] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
-  const client = useMemo(() => getApiClient(), [])
-  const submitCancelRef = useRef<CancelTokenSource | null>(null)
+  const [, startTransition] = useTransition()
 
   const { 
     status,
@@ -64,27 +62,6 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
     disconnectGoogleAccount,
     fetchSpreadsheets
   } = useGoogleSheets()
-
-  // Check connection status when modal opens
-  useEffect(() => {
-    if (open) {
-      void checkConnectionStatus()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  // Fetch spreadsheets when connected
-  useEffect(() => {
-    if (status?.isConnected && !status?.isExpired && spreadsheets.length === 0) {
-      console.log('Status is connected, fetching spreadsheets...')
-      void fetchSpreadsheets()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, spreadsheets.length])
-
-  useEffect(() => () => {
-    submitCancelRef.current?.cancel('Component unmounted')
-  }, [])
 
   const handleInputChange = (field: keyof FormData, value: string | number | string[]) => {
     setFormData(prev => {
@@ -126,11 +103,6 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
       setSubmitting(true)
       setErrors([])
 
-      if (submitCancelRef.current) {
-        submitCancelRef.current.cancel('Superseded submission')
-      }
-
-      // Format data for API submission
       const jobTitlesArray = (typeof formData.jobTitles[0] === 'string' 
         ? formData.jobTitles[0].split(',') 
         : formData.jobTitles
@@ -154,45 +126,39 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
         excludeDomains: formData.excludeDomains?.trim() || undefined,
       }
 
-      const cancelSource = createCancelSource()
-      submitCancelRef.current = cancelSource
-
-      const { data } = await client.post('/api/campaigns', apiFormData, {
-        cancelToken: cancelSource.token,
+      startTransition(() => {
+        createCampaignAction(apiFormData)
+          .then((data) => {
+            toast.success('Campaign created! Apollo lead fetching has started.')
+            onSuccess(data.campaign)
+            onOpenChange(false)
+            setFormData({
+              name: '',
+              jobTitles: [''],
+              keywords: '',
+              locations: [''],
+              googleSheetId: '',
+              maxLeads: 1000,
+              pageSize: 25,
+              searchMode: 'balanced',
+              includeDomains: '',
+              excludeDomains: ''
+            })
+          })
+          .catch((error) => {
+            const errorMessage = error instanceof Error ? error.message : 'Failed to create campaign'
+            toast.error(errorMessage)
+            setErrors([errorMessage])
+          })
+          .finally(() => {
+            setSubmitting(false)
+          })
       })
-      
-      toast.success('Campaign created! Apollo lead fetching has started.')
-      onSuccess(data.campaign)
-      onOpenChange(false)
-      
-      // Reset form
-      setFormData({
-        name: '',
-        jobTitles: [''],
-        keywords: '',
-        locations: [''],
-        googleSheetId: '',
-        maxLeads: 1000,
-        pageSize: 25,
-        searchMode: 'balanced',
-        includeDomains: '',
-        excludeDomains: ''
-      })
-
     } catch (error) {
-      if (axios.isCancel(error)) {
-        return
-      }
-      const errorMessage = axios.isAxiosError(error)
-        ? (error.response?.data?.error as string) || error.message || 'Failed to create campaign'
-        : error instanceof Error
-          ? error.message
-          : 'Failed to create campaign'
+      const errorMessage = error instanceof Error ? error.message : 'Failed to create campaign'
       toast.error(errorMessage)
       setErrors([errorMessage])
-    } finally {
       setSubmitting(false)
-      submitCancelRef.current = null
     }
   }
 
