@@ -338,7 +338,7 @@ function StepOneContent({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">Range</label>
-              <Input value={sheetRange} onChange={(event) => onSheetRangeChange(event.target.value)} placeholder="Sheet1!A:P" />
+              <Input value={sheetRange} onChange={(event) => onSheetRangeChange(event.target.value)} placeholder="Sheet1!A:N" />
               <p className="text-xs text-muted-foreground">Use `Tab!A:Z` to limit rows.</p>
             </div>
             <div className="space-y-2">

@@ -1,7 +1,7 @@
 // src/components/CreateCampaignForm.tsx
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -62,8 +62,6 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
     disconnectGoogleAccount,
     fetchSpreadsheets
   } = useGoogleSheets()
-<<<<<<< HEAD
-=======
   // Check connection status when modal opens
   useEffect(() => {
     if (open) {
@@ -82,9 +80,8 @@ export function CreateCampaignForm({ open, onOpenChange, onSuccess }: CreateCamp
   }, [status, spreadsheets.length])
 
   useEffect(() => () => {
-    submitCancelRef.current?.cancel('Component unmounted')
+    // no cleanup needed after removing cancel tokens
   }, [])
->>>>>>> origin/main
 
   const handleInputChange = (field: keyof FormData, value: string | number | string[]) => {
     setFormData(prev => {

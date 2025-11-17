@@ -1,5 +1,4 @@
 // src/scripts/start-worker.ts
-import '../../scripts/zlib-shim'
 import dotenv from 'dotenv'
 import path from 'path'
 

@@ -1,181 +1,18 @@
 // src/lib/apollo.ts
 import axios from 'axios'
 import { RateLimiter } from '@/lib/rate-limit'
+import {
+  ApolloBulkMatchPersonRequest,
+  ApolloBulkMatchResponse,
+  ApolloHttpMethod,
+  ApolloLead,
+  ApolloRevealEmailResponse,
+  ApolloSearchFilters,
+  ApolloSearchResponse,
+  RawApolloLead,
+} from '@/types/apollo'
 
 const APOLLO_API_BASE = 'https://api.apollo.io/api/v1'
-
-export interface ApolloLead {
-  id: string
-  first_name: string
-  last_name: string
-  title: string
-  company_name: string
-  domain: string
-  email: string
-  linkedin_url: string
-  phone?: string
-  industry?: string
-  street_address?: string
-  city?: string
-  state?: string
-  country?: string
-  postal_code?: string
-  formatted_address?: string
-  summary?: string // AI-generated summary
-}
-
-interface ApolloBulkMatchPersonRequest {
-  identifier: string
-  first_name?: string
-  last_name?: string
-  title?: string
-  organization_name?: string
-  linkedin_url?: string
-  city?: string
-  state?: string
-  country?: string
-}
-
-interface ApolloBulkMatchPersonResponse {
-  request?: {
-    identifier?: string
-    client_identifier?: string
-  }
-  person?: {
-    id?: string
-    email?: string
-    emails?: Array<{ value?: string; email?: string }>
-    emails_raw?: string[]
-    phone_number?: string
-    mobile_number?: string
-    phone_numbers?: Array<{ number?: string } | string>
-    linkedin_url?: string
-    city?: string
-    state?: string
-    country?: string
-    street_address?: string
-    postal_code?: string
-    formatted_address?: string
-    organization?: {
-      name?: string
-      website_url?: string
-      linkedin_url?: string
-      industry?: string
-    }
-  }
-}
-
-interface ApolloBulkMatchResponse {
-  people?: ApolloBulkMatchPersonResponse[]
-}
-
-interface ApolloRevealEmailResponse {
-  email?: string | null
-}
-
-type ApolloHttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT' | 'HEAD'
-
-type ApolloOrganization = {
-  name?: string
-  website_url?: string
-  industry?: string
-}
-
-type ApolloPhoneEntry = { number?: string | null } | string | null
-
-interface RawApolloLead {
-  id?: string
-  first_name?: string | null
-  last_name?: string | null
-  title?: string | null
-  organization?: ApolloOrganization | null
-  email?: string | null
-  linkedin_url?: string | null
-  phone_numbers?: ApolloPhoneEntry[] | null
-  street_address?: string | null
-  city?: string | null
-  state?: string | null
-  country?: string | null
-  postal_code?: string | null
-  formatted_address?: string | null
-}
-
-export interface ApolloSearchResponse {
-  people: Array<{
-    id: string
-    first_name: string
-    last_name: string
-    title: string
-    organization: {
-      name: string
-      website_url: string
-      industry?: string
-    }
-    email: string
-    linkedin_url: string
-    phone_numbers?: Array<{ number?: string | null }>
-    city?: string | null
-    state?: string | null
-    country?: string | null
-    street_address?: string | null
-    postal_code?: string | null
-    formatted_address?: string | null
-  }>
-  pagination: {
-    total_entries: number
-    per_page: number
-    current_page: number
-    total_pages: number
-  }
-}
-
-export interface ApolloSearchFilters {
-  person_titles: string[]
-  person_locations: string[]
-  keywords?: string[]
-  page?: number
-  per_page?: number
-}
-
-interface ApolloBulkMatchPersonRequest {
-  identifier: string
-  first_name?: string
-  last_name?: string
-  title?: string
-  organization_name?: string
-  domain?: string
-  linkedin_url?: string
-  email?: string
-  city?: string
-  state?: string
-  country?: string
-}
-
-interface ApolloBulkMatchResponse {
-  matches?: Array<{
-    id?: string
-    client_identifier?: string
-    email?: string
-    emails?: Array<{ email?: string; value?: string }>
-    emails_raw?: string[]
-    phone_number?: string
-    mobile_number?: string
-    phone_numbers?: Array<{ number?: string } | string>
-    linkedin_url?: string
-    street_address?: string
-    city?: string
-    state?: string
-    country?: string
-    postal_code?: string
-    formatted_address?: string
-    organization?: {
-      name?: string
-      website_url?: string
-      linkedin_url?: string
-      industry?: string
-    }
-  }>
-}
 
 export class ApolloError extends Error {
   constructor(
@@ -522,7 +359,8 @@ export class ApolloClient {
         country: lead.country || '',
         postal_code: lead.postal_code || '',
         formatted_address: lead.formatted_address || '',
-        summary: this.generateLeadSummary(lead)
+        summary: this.generateLeadSummary(lead),
+        raw_person: lead
       }
     })
   }

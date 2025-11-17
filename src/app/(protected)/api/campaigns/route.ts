@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
         const resolvedTitle = primarySheet?.title?.trim() || 'Sheet1'
         const escapedTitle = resolvedTitle.replace(/'/g, "''")
         const quotedTitle = `'${escapedTitle}'`
-        const resolvedRange = `${quotedTitle}!A:P`
+        const resolvedRange = `${quotedTitle}!A:N`
 
         googleSheet = await prisma.googleSheet.update({
           where: { id: googleSheet.id },

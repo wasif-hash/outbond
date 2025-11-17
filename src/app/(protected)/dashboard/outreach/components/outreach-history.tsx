@@ -9,8 +9,6 @@ import { FastSpinner } from "./FastSpinner"
 import type { ManualCampaignGroup } from "./types"
 import type { OutreachedJob } from "@/types/outreach"
 import type { ManualCampaignDraft } from "@/types/outreach-workflow"
-import { cn } from "@/lib/utils"
-import { jobStatusBadgeProps } from "@/lib/leads/outreach"
 
 type OutreachHistoryProps = {
   jobsLoading: boolean
@@ -19,15 +17,12 @@ type OutreachHistoryProps = {
   deletingDraftId: string | null
   manualCampaigns: ManualCampaignGroup[]
   filteredCampaigns: ManualCampaignGroup[]
-  legacyJobs: OutreachedJob[]
-  filteredLegacyJobs: OutreachedJob[]
   onResumeDraft: (draft: ManualCampaignDraft) => void
   onDeleteDraft: (draftId: string) => void
   onRefresh: () => void
   onExportAll: () => void
   onExportCampaign: (jobs: OutreachedJob[], options?: { fileLabel?: string }) => void
-  onSelectCampaign: (campaign: ManualCampaignGroup) => void
-  onPreviewLegacyJob: (job: OutreachedJob) => void
+  onNavigateCampaign: (campaignId: string) => void
 }
 
 export function OutreachHistory({
@@ -37,17 +32,14 @@ export function OutreachHistory({
   deletingDraftId,
   manualCampaigns,
   filteredCampaigns,
-  legacyJobs,
-  filteredLegacyJobs,
   onResumeDraft,
   onDeleteDraft,
   onRefresh,
   onExportAll,
   onExportCampaign,
-  onSelectCampaign,
-  onPreviewLegacyJob,
+  onNavigateCampaign,
 }: OutreachHistoryProps) {
-  const totalExportableJobs = manualCampaigns.reduce((sum, campaign) => sum + campaign.jobs.length, 0) + legacyJobs.length
+  const totalExportableJobs = manualCampaigns.reduce((sum, campaign) => sum + campaign.jobs.length, 0)
 
   return (
     <Card>
@@ -55,7 +47,7 @@ export function OutreachHistory({
         <div>
           <CardTitle className="text-lg font-mono">Outreach history</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Review sent campaigns and legacy emails queued from this dashboard.
+            Review every outreach campaign launched from this dashboard.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -87,19 +79,12 @@ export function OutreachHistory({
           jobsLoading={jobsLoading}
           manualCampaigns={manualCampaigns}
           filteredCampaigns={filteredCampaigns}
-          onSelectCampaign={onSelectCampaign}
+          onNavigateCampaign={onNavigateCampaign}
           onExportCampaign={onExportCampaign}
         />
-
-        <LegacyEmails
-          jobsLoading={jobsLoading}
-          legacyJobs={legacyJobs}
-          filteredLegacyJobs={filteredLegacyJobs}
-          onPreviewLegacyJob={onPreviewLegacyJob}
-        />
-      </CardContent>
-    </Card>
-  )
+    </CardContent>
+  </Card>
+)
 }
 
 function DraftCampaigns({
@@ -190,9 +175,9 @@ function CompletedCampaigns({
   jobsLoading,
   manualCampaigns,
   filteredCampaigns,
-  onSelectCampaign,
+  onNavigateCampaign,
   onExportCampaign,
-}: Pick<OutreachHistoryProps, "jobsLoading" | "manualCampaigns" | "filteredCampaigns" | "onSelectCampaign" | "onExportCampaign">) {
+}: Pick<OutreachHistoryProps, "jobsLoading" | "manualCampaigns" | "filteredCampaigns" | "onNavigateCampaign" | "onExportCampaign">) {
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -222,7 +207,8 @@ function CompletedCampaigns({
           {filteredCampaigns.map((campaign) => (
             <div
               key={campaign.id}
-              className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4 sm:flex-row sm:items-center sm:justify-between"
+              onClick={() => onNavigateCampaign(campaign.id)}
+              className="flex cursor-pointer flex-col gap-3 rounded-lg border border-border bg-background p-4 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
@@ -236,14 +222,22 @@ function CompletedCampaigns({
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" variant="outline" onClick={() => onSelectCampaign(campaign)}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onNavigateCampaign(campaign.id)
+                  }}
+                >
                   <Eye className="mr-2 h-4 w-4" />
-                  View leads
+                  View metrics
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => {
+                  onClick={(event) => {
+                    event.stopPropagation()
                     const normalizedLabel = (campaign.name ?? "outreach-campaign")
                       .toLowerCase()
                       .replace(/[^a-z0-9]+/g, "-")
@@ -260,95 +254,6 @@ function CompletedCampaigns({
           ))}
         </div>
       )}
-    </section>
-  )
-}
-
-function LegacyEmails({
-  jobsLoading,
-  legacyJobs,
-  filteredLegacyJobs,
-  onPreviewLegacyJob,
-}: Pick<OutreachHistoryProps, "jobsLoading" | "legacyJobs" | "filteredLegacyJobs" | "onPreviewLegacyJob">) {
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-semibold text-foreground">Legacy emails</h3>
-          <p className="text-xs text-muted-foreground">
-            Emails without a campaign tag appear here. You can still review and export them.
-          </p>
-        </div>
-        <Badge variant="outline" className="font-mono uppercase">
-          {filteredLegacyJobs.length}
-        </Badge>
-      </div>
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-muted/40 text-left">
-              <th className="px-4 py-2 font-mono font-semibold">Recipient</th>
-              <th className="px-4 py-2 font-mono font-semibold">Subject</th>
-              <th className="px-4 py-2 font-mono font-semibold">Status</th>
-              <th className="px-4 py-2 font-mono font-semibold">Sent</th>
-              <th className="px-4 py-2 font-mono font-semibold">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {jobsLoading ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                  Loading outreached emails…
-                </td>
-              </tr>
-            ) : filteredLegacyJobs.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                  {legacyJobs.length === 0 ? "No emails have been sent yet." : "No legacy emails match your search."}
-                </td>
-              </tr>
-            ) : (
-              filteredLegacyJobs.map((job) => (
-                <tr key={job.id} className="border-t border-border">
-                  <td className="px-4 py-2">
-                    <div className="font-medium">
-                      {job.leadFirstName || job.leadLastName
-                        ? `${job.leadFirstName ?? ""} ${job.leadLastName ?? ""}`.trim()
-                        : job.leadEmail}
-                    </div>
-                    <div className="text-xs text-muted-foreground">{job.leadEmail}</div>
-                  </td>
-                  <td className="px-4 py-2 text-muted-foreground line-clamp-1">{job.subject}</td>
-                <td className="px-4 py-2">
-                  {(() => {
-                    const { label, className } = jobStatusBadgeProps(job.status)
-                    return (
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          "min-w-[88px] justify-center uppercase tracking-wide",
-                          className,
-                        )}
-                      >
-                        {label}
-                      </Badge>
-                    )
-                  })()}
-                </td>
-                  <td className="px-4 py-2 text-xs whitespace-nowrap text-muted-foreground">
-                    {job.sentAt ? new Date(job.sentAt).toLocaleString() : "—"}
-                  </td>
-                  <td className="px-4 py-2">
-                    <Button size="sm" variant="outline" onClick={() => onPreviewLegacyJob(job)}>
-                      <Eye className="mr-2 h-4 w-4" /> View
-                    </Button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
     </section>
   )
 }

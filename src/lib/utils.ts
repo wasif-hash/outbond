@@ -2,13 +2,12 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
 import crypto from 'crypto'
-import { ApolloLead } from './apollo/apollo'
+import { ApolloLead } from '@/types/apollo'
 
 export const LEAD_SHEET_COLUMNS = [
   'Email',
   'First Name',
   'Last Name',
-  'Phone',
   'Company',
   'Job Title',
   'Website',
@@ -18,7 +17,6 @@ export const LEAD_SHEET_COLUMNS = [
   'City',
   'State',
   'Country',
-  'Postal Code',
   'Formatted Address',
   'Summary'
 ]
@@ -106,7 +104,6 @@ export interface SheetLeadRow {
   email: string
   firstName: string
   lastName: string
-  phone: string
   company: string
   jobTitle: string
   website: string
@@ -116,7 +113,6 @@ export interface SheetLeadRow {
   city: string
   state: string
   country: string
-  postalCode: string
   formattedAddress: string
   summary: string
 }

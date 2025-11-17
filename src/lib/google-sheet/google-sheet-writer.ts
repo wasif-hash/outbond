@@ -159,7 +159,7 @@ async function ensureHeaders(sheets: sheets_v4.Sheets, spreadsheetId: string, ra
     // Check if there are any values in the first row
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A1:P1`, // First row
+      range: `${sheetName}!A1:N1`, // First row
     })
 
     const existingHeaders = response.data.values?.[0]
@@ -170,7 +170,7 @@ async function ensureHeaders(sheets: sheets_v4.Sheets, spreadsheetId: string, ra
     if (!headersMatch) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${sheetName}!A1:P1`,
+        range: `${sheetName}!A1:N1`,
         valueInputOption: 'RAW',
         requestBody: {
           values: [LEAD_SHEET_COLUMNS],
@@ -197,7 +197,6 @@ function leadToSheetRow(lead: SheetLeadRow): string[] {
     lead.email,
     lead.firstName,
     lead.lastName,
-    lead.phone,
     lead.company,
     lead.jobTitle,
     lead.website,
@@ -207,7 +206,6 @@ function leadToSheetRow(lead: SheetLeadRow): string[] {
     lead.city,
     lead.state,
     lead.country,
-    lead.postalCode,
     lead.formattedAddress,
     lead.summary,
   ]

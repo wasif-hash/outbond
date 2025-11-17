@@ -3,7 +3,8 @@ import { Worker, Job } from 'bullmq'
 import type { Lead, Prisma, JobStatus } from '@prisma/client'
 import { redis, LeadFetchJobData } from './queue'
 import { prisma } from './prisma'
-import { apollo, ApolloError, ApolloSearchFilters, ApolloLead, ApolloSearchResponse } from './apollo/apollo'
+import { apollo, ApolloError } from './apollo/apollo'
+import { ApolloLead, ApolloSearchFilters, ApolloSearchResponse } from '@/types/apollo'
 import { generateSmartLeadSummary } from './gemini'
 import { generateLeadSummary, SheetLeadRow, sanitizeEmailForSheet, chunkArray } from './utils'
 import {
@@ -376,8 +377,8 @@ export class LeadFetchWorker {
         }
 
         const storedRange = campaign.googleSheet.range
-          || (campaign.googleSheet.sheetTitle ? `${campaign.googleSheet.sheetTitle}!A:P` : 'Sheet1')
-        const sheetRange = storedRange.includes('!') ? storedRange : `${storedRange}!A:P`
+          || (campaign.googleSheet.sheetTitle ? `${campaign.googleSheet.sheetTitle}!A:N` : 'Sheet1')
+        const sheetRange = storedRange.includes('!') ? storedRange : `${storedRange}!A:N`
 
         console.log(
           `📊 Writing ${aggregatedSheetRows.length} leads to Google Sheet: ${campaign.googleSheet.title} (range: ${sheetRange})`,
@@ -969,12 +970,10 @@ export class LeadFetchWorker {
       console.log(`⚠️ Email marked as locked or invalid, will blank in sheet output: ${lead.email}`)
     }
 
-    const phone = lead.phone ? lead.phone.toString().trim() : ''
     const streetAddress = lead.street_address ? lead.street_address.toString().trim() : ''
     const city = lead.city ? lead.city.toString().trim() : ''
     const state = lead.state ? lead.state.toString().trim() : ''
     const country = lead.country ? lead.country.toString().trim() : ''
-    const postalCode = lead.postal_code ? lead.postal_code.toString().trim() : ''
     const formattedAddress = lead.formatted_address ? lead.formatted_address.toString().trim() : ''
 
     const summary = (await this.createLeadSummary(lead)).trim() || 'Summary unavailable.'
@@ -1009,13 +1008,14 @@ export class LeadFetchWorker {
       isSuppressed: false,
     }
 
+    const sheetJobTitle = this.cleanString(lead.headline) ?? dbData.jobTitle ?? ''
+
     const sheetRow: SheetLeadRow = {
       email: sanitizeEmailForSheet(hasValidEmail ? rawEmail : null),
       firstName: dbData.firstName || '',
       lastName: dbData.lastName || '',
-      phone,
       company: dbData.company || '',
-      jobTitle: dbData.jobTitle || '',
+      jobTitle: sheetJobTitle,
       website: dbData.website || '',
       linkedinUrl: dbData.linkedinUrl || '',
       industry: dbData.industry || '',
@@ -1023,7 +1023,6 @@ export class LeadFetchWorker {
       city,
       state,
       country,
-      postalCode,
       formattedAddress,
       summary: finalSummary,
     }
@@ -1041,7 +1040,7 @@ export class LeadFetchWorker {
     const quotedTitle = `'${escapedTitle}'`
     return {
       sheetTitle: normalizedTitle,
-      range: `${quotedTitle}!A:P`,
+      range: `${quotedTitle}!A:N`,
     }
   }
 
@@ -1090,6 +1089,18 @@ export class LeadFetchWorker {
         domain: lead.domain,
         email: lead.email,
         linkedinUrl: lead.linkedin_url,
+        rawPayload: lead.raw_person ?? {
+          id: lead.id,
+          first_name: lead.first_name,
+          last_name: lead.last_name,
+          title: lead.title,
+          organization: { name: lead.company_name, website_url: lead.domain },
+          email: lead.email,
+          linkedin_url: lead.linkedin_url,
+          city: lead.city,
+          state: lead.state,
+          country: lead.country,
+        },
       })
     } catch (error) {
       console.error('Gemini summary helper failed, using fallback:', error)

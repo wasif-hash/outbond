@@ -15,7 +15,7 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => HTML_ENTITY_MAP[char])
 }
 
-function htmlToPlainText(html: string): string {
+export function htmlToPlainText(html: string): string {
   return html
     .replace(PARAGRAPH_CLOSE_REGEX, '\n\n')
     .replace(BREAK_TAG_REGEX, '\n')

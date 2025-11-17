@@ -1,13 +1,14 @@
-import { useQuery, type UseQueryOptions } from "@tanstack/react-query"
-import axios from "axios"
+"use client"
 
+import { useQuery, type UseQueryOptions } from "@tanstack/react-query"
+
+import { getSavedSnippetsAction } from "@/actions/saved-snippets"
 import type { SavedSnippet } from "@/types/saved-snippet"
 
 const SAVED_SNIPPETS_QUERY_KEY = ["savedSnippets"] as const
 
 async function fetchSavedSnippets(): Promise<SavedSnippet[]> {
-  const response = await axios.get<{ snippets: SavedSnippet[] }>("/api/saved-items")
-  return response.data.snippets ?? []
+  return getSavedSnippetsAction()
 }
 
 type SavedSnippetsQueryOptions = Omit<UseQueryOptions<SavedSnippet[], Error>, "queryKey" | "queryFn"> & {
@@ -26,5 +27,4 @@ export function useSavedSnippets(options: SavedSnippetsQueryOptions = {}) {
     ...options,
   })
 }
-
 export { SAVED_SNIPPETS_QUERY_KEY }

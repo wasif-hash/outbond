@@ -73,7 +73,7 @@ export async function GET(
     const requestedRange = rangeParam || defaultSheetTitle
     const effectiveRange = requestedRange.includes('!')
       ? requestedRange
-      : `${requestedRange}!A:P`
+      : `${requestedRange}!A:N`
 
     let data: string[][]
     try {
@@ -82,7 +82,7 @@ export async function GET(
       const status = getApiStatus(apiError)
       if (status === 404) {
         return NextResponse.json(
-          { error: 'Sheet tab or range not found. Confirm the tab name exists and the range is valid (e.g. "Leads!A:P").' },
+          { error: 'Sheet tab or range not found. Confirm the tab name exists and the range is valid (e.g. "Leads!A:N").' },
           { status: 404 },
         )
       }

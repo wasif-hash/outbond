@@ -11,6 +11,7 @@ interface GeminiSummaryInput {
   domain?: string | null
   email?: string | null
   linkedinUrl?: string | null
+  rawPayload?: Record<string, unknown> | null
 }
 
 interface OutreachEmailCandidate {
@@ -212,16 +213,23 @@ export async function generateGeminiLeadSummary(input: GeminiSummaryInput): Prom
       return null
     }
 
-    try {
-      const parsed = JSON.parse(text)
-      if (parsed && typeof parsed === 'object') {
-        const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : ''
-        if (summary) {
-          return summary
+    const normalizedJson = normaliseJsonBlock(text)
+
+    if (normalizedJson) {
+      try {
+        const parsed = JSON.parse(normalizedJson)
+        if (parsed && typeof parsed === 'object') {
+          const summaryField = (parsed as { summary?: unknown }).summary
+          const summary = typeof summaryField === 'string' ? summaryField.trim() : ''
+          if (summary) {
+            return summary
+          }
         }
+      } catch {
+        // Swallow parse errors and fall through to fallback logic
       }
-    } catch {
-      // Fall through to returning raw text
+
+      return null
     }
 
     return text.trim()
@@ -232,7 +240,7 @@ export async function generateGeminiLeadSummary(input: GeminiSummaryInput): Prom
 }
 
 function buildPrompt(input: GeminiSummaryInput): string {
-  const payload = {
+  const payload: Record<string, unknown> = {
     person: {
       first_name: input.firstName || '',
       last_name: input.lastName || '',
@@ -242,6 +250,10 @@ function buildPrompt(input: GeminiSummaryInput): string {
       email: input.email || '',
       linkedin_url: input.linkedinUrl || ''
     }
+  }
+
+  if (input.rawPayload) {
+    payload.raw_apollo_payload = input.rawPayload
   }
 
   return JSON.stringify(payload, null, 2)

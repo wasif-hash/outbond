@@ -109,6 +109,11 @@ export function jobStatusBadgeProps(
         label: 'Pending',
         className: 'border-border bg-muted text-foreground',
       }
+    case 'DRAFT':
+      return {
+        label: 'Draft',
+        className: 'border-dashed border-border bg-transparent text-muted-foreground',
+      }
     default:
       return {
         label: normalized || 'Pending',

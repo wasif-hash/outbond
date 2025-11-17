@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ChangeEvent } from "react"
+import { useRouter } from "next/navigation"
 import axios, { CancelTokenSource } from "axios"
 import { useQuery } from "@tanstack/react-query"
 import { Search, UploadCloud } from "lucide-react"
@@ -12,6 +13,9 @@ import { Input } from "@/components/ui/input"
 import { useGoogleSheets } from "@/hooks/useGoogleSheet"
 import { useSavedSnippets } from "@/hooks/useSavedSnippets"
 import { useGmail } from "@/hooks/useGmail"
+import { createSavedSnippetAction } from "@/actions/saved-snippets"
+import { getOutreachedJobsAction, sendBulkEmailsAction } from "@/actions/outreach"
+import * as manualCampaignDraftActions from "@/actions/manual-campaign-drafts"
 import {
   DraftRecord,
   ManualOutreachSource,
@@ -25,12 +29,10 @@ import { formatEmailBody } from "@/lib/email/format"
 import { DraftPreviewPanel } from "./components/draft-preview-panel"
 import { WizardOverlay } from "./components/wizard-overlay"
 import type { StepOneProps, StepTwoProps, StepThreeProps, WizardOverlayProps } from "./components/wizard-overlay"
-import { SentEmailPanel } from "./components/sent-email-panel"
-import { SentCampaignPanel } from "./components/sent-campaign-panel"
 import { OutreachHistory } from "./components/outreach-history"
 import type { ChatMessage, ManualCampaignGroup, OutreachSourceType, WizardStep } from "./components/types"
 import type { ManualCampaignDraft, ManualCampaignDraftStatus, PersistedWorkflowState } from "@/types/outreach-workflow"
-import type { SavedSnippet } from "@/types/saved-snippet"
+import { htmlToPlainText } from "@/lib/email/format"
 
 const SOURCE_OPTIONS: Array<{ value: OutreachSourceType; label: string; description: string }> = [
   {
@@ -45,14 +47,6 @@ const SOURCE_OPTIONS: Array<{ value: OutreachSourceType; label: string; descript
   },
 ]
 
-const htmlToPlainText = (html: string): string =>
-  html
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<br\s*\/?\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim()
-
 const LOCAL_STORAGE_KEY = "outbond.dashboard.outreach"
 
 const generateManualCampaignId = () => {
@@ -63,6 +57,7 @@ const generateManualCampaignId = () => {
 }
 
 export default function Leads() {
+  const router = useRouter()
   const [searchTerm, setSearchTerm] = useState("")
   const [sendingMode, setSendingMode] = useState<OutreachMode>("single")
   const [selectedSheetId, setSelectedSheetId] = useState<string>("")
@@ -89,8 +84,6 @@ export default function Leads() {
   const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null)
 
   const [previewEmail, setPreviewEmail] = useState<string | null>(null)
-  const [previewJob, setPreviewJob] = useState<OutreachedJob | null>(null)
-  const [selectedCampaign, setSelectedCampaign] = useState<ManualCampaignGroup | null>(null)
   const [previewEditing, setPreviewEditing] = useState(false)
   const [editedSubject, setEditedSubject] = useState("")
   const [editedBody, setEditedBody] = useState("")
@@ -107,10 +100,7 @@ export default function Leads() {
     error: outreachJobsError,
   } = useQuery<OutreachedJob[], Error>({
     queryKey: ["outreachJobs"],
-    queryFn: async () => {
-      const response = await axios.get<{ jobs: OutreachedJob[] }>("/api/email/outreach/jobs")
-      return response.data.jobs ?? []
-    },
+    queryFn: getOutreachedJobsAction,
     staleTime: 1000 * 60,
     retry: 1,
     refetchOnWindowFocus: false,
@@ -122,10 +112,7 @@ export default function Leads() {
     refetch: refetchCampaignDrafts,
   } = useQuery<ManualCampaignDraft[], Error>({
     queryKey: ["manualCampaignDrafts"],
-    queryFn: async () => {
-      const response = await axios.get<{ drafts: ManualCampaignDraft[] }>("/api/email/outreach/manual-campaigns")
-      return response.data.drafts ?? []
-    },
+    queryFn: manualCampaignDraftActions.getManualCampaignDraftsAction,
     staleTime: 1000 * 30,
     refetchOnWindowFocus: false,
   })
@@ -355,17 +342,12 @@ export default function Leads() {
         throw new Error("Prompt name and content are required")
       }
       try {
-        await axios.post("/api/saved-items", payload)
+        await createSavedSnippetAction(payload)
         toast.success("Prompt saved to your library")
         await refetchSavedSnippets().catch(() => undefined)
       } catch (error) {
         console.error("Failed to save prompt snippet:", error)
-        if (axios.isAxiosError(error)) {
-          const message = (error.response?.data as { error?: string })?.error ?? "Failed to save prompt"
-          toast.error(message)
-        } else {
-          toast.error("Failed to save prompt")
-        }
+        toast.error(error instanceof Error ? error.message : "Failed to save prompt")
         throw error
       }
     },
@@ -375,21 +357,19 @@ export default function Leads() {
   const persistManualCampaignDraft = useCallback(
     async (nextStatus: ManualCampaignDraftStatus) => {
       const workflowState = buildWorkflowState()
-      const response = await axios.post<{ draft: ManualCampaignDraft }>("/api/email/outreach/manual-campaigns", {
+      const draft = await manualCampaignDraftActions.persistManualCampaignDraftAction({
         id: workflowState.manualCampaignId,
         name: workflowState.campaignName,
         sourceType: workflowState.sourceType,
         status: nextStatus,
         state: workflowState,
       })
-
-      const savedDraft = response.data?.draft
-      if (savedDraft) {
-        setManualCampaignId(savedDraft.id)
+      if (draft) {
+        setManualCampaignId(draft.id)
       }
-      return savedDraft
+      return draft
     },
-    [buildWorkflowState, setManualCampaignId],
+    [buildWorkflowState],
   )
 
   useEffect(() => {
@@ -467,7 +447,7 @@ export default function Leads() {
     async (draftId: string) => {
       setDeletingDraftId(draftId)
       try {
-        await axios.delete(`/api/email/outreach/manual-campaigns/${draftId}`)
+        await manualCampaignDraftActions.deleteManualCampaignDraftAction(draftId)
         if (manualCampaignId === draftId) {
           setManualCampaignId(null)
         }
@@ -475,16 +455,12 @@ export default function Leads() {
         await refetchCampaignDrafts().catch(() => undefined)
       } catch (error) {
         console.error("Failed to delete draft campaign:", error)
-        const message =
-          axios.isAxiosError(error) && (error.response?.data as { error?: string })?.error
-            ? (error.response?.data as { error?: string })?.error
-            : "Failed to delete draft campaign"
-        toast.error(message)
+        toast.error(error instanceof Error ? error.message : "Failed to delete draft campaign")
       } finally {
         setDeletingDraftId(null)
       }
     },
-    [manualCampaignId, refetchCampaignDrafts, setManualCampaignId],
+    [manualCampaignId, refetchCampaignDrafts],
   )
 
   const syncDraftStatus = useCallback(
@@ -628,51 +604,48 @@ export default function Leads() {
     return nameMatches || companyMatches || emailMatches
   })
 
-  const { manualCampaigns, legacyJobs } = useMemo(() => {
+  const manualCampaigns = useMemo(() => {
     const map = new Map<string, ManualCampaignGroup>()
-    const legacy: OutreachedJob[] = []
     outreachedJobs.forEach((job) => {
-      if (job.manualCampaignId) {
-        const id = job.manualCampaignId
-        const lastTimestamp = job.sentAt ?? job.createdAt
-        const status = job.status?.toUpperCase() ?? ""
-        if (map.has(id)) {
-          const group = map.get(id)!
-          group.totalCount += 1
-          if (status === "SENT") {
-            group.sentCount += 1
-          }
-          group.jobs.push(job)
-          if (!group.lastSentAt || new Date(lastTimestamp).getTime() > new Date(group.lastSentAt).getTime()) {
-            group.lastSentAt = lastTimestamp
-          }
-          if (job.manualCampaignSource && !group.source) {
-            group.source = job.manualCampaignSource
-          }
-          if (job.manualCampaignName) {
-            group.name = job.manualCampaignName
-          }
-        } else {
-          map.set(id, {
-            id,
-            name: job.manualCampaignName ?? "Untitled Outreach",
-            source: job.manualCampaignSource ?? null,
-            sentCount: status === "SENT" ? 1 : 0,
-            totalCount: 1,
-            lastSentAt: lastTimestamp,
-            jobs: [job],
-          })
+      if (!job.manualCampaignId) {
+        return
+      }
+      const id = job.manualCampaignId
+      const lastTimestamp = job.sentAt ?? job.createdAt
+      const status = job.status?.toUpperCase() ?? ""
+      if (map.has(id)) {
+        const group = map.get(id)!
+        group.totalCount += 1
+        if (status === "SENT") {
+          group.sentCount += 1
+        }
+        group.jobs.push(job)
+        if (!group.lastSentAt || new Date(lastTimestamp).getTime() > new Date(group.lastSentAt).getTime()) {
+          group.lastSentAt = lastTimestamp
+        }
+        if (job.manualCampaignSource && !group.source) {
+          group.source = job.manualCampaignSource
+        }
+        if (job.manualCampaignName) {
+          group.name = job.manualCampaignName
         }
       } else {
-        legacy.push(job)
+        map.set(id, {
+          id,
+          name: job.manualCampaignName ?? "Untitled Outreach",
+          source: job.manualCampaignSource ?? null,
+          sentCount: status === "SENT" ? 1 : 0,
+          totalCount: 1,
+          lastSentAt: lastTimestamp,
+          jobs: [job],
+        })
       }
     })
-    const campaigns = Array.from(map.values()).sort((a, b) => {
+    return Array.from(map.values()).sort((a, b) => {
       const aTime = a.lastSentAt ? new Date(a.lastSentAt).getTime() : 0
       const bTime = b.lastSentAt ? new Date(b.lastSentAt).getTime() : 0
       return bTime - aTime
     })
-    return { manualCampaigns: campaigns, legacyJobs: legacy }
   }, [outreachedJobs])
 
   const filteredCampaigns = useMemo(() => {
@@ -695,21 +668,6 @@ export default function Leads() {
       })
     })
   }, [manualCampaigns, searchTerm])
-
-  const filteredLegacyJobs = useMemo(() => {
-    if (!searchTerm.trim()) return legacyJobs
-    const query = searchTerm.toLowerCase()
-    return legacyJobs.filter((job) => {
-      const fields = [
-        job.leadEmail,
-        job.leadFirstName ?? '',
-        job.leadLastName ?? '',
-        job.leadCompany ?? '',
-        job.subject,
-      ]
-      return fields.some((value) => value?.toLowerCase().includes(query))
-    })
-  }, [legacyJobs, searchTerm])
 
   const savedPrompts = useMemo(
     () => (savedSnippetsData ?? []).filter((snippet) => snippet.type === "PROMPT"),
@@ -740,6 +698,13 @@ export default function Leads() {
 
   const outreachDraft = previewEmail ? drafts[previewEmail] : null
   const previewLead = useMemo(() => leads.find((lead) => lead.email === previewEmail), [previewEmail, leads])
+
+  const handleNavigateToCampaign = useCallback(
+    (campaignId: string) => {
+      router.push(`/dashboard/outreach/${campaignId}`)
+    },
+    [router],
+  )
 
   const handleSheetSelectOpen = useCallback(
     (open: boolean) => {
@@ -823,7 +788,7 @@ export default function Leads() {
     if (data?.sheets?.length) {
       const firstTab = data.sheets[0]?.title || 'Sheet1'
       if (!rangeToUse) {
-        setSheetRange(`${firstTab}!A:P`)
+        setSheetRange(`${firstTab}!A:N`)
       }
     }
   }
@@ -1064,7 +1029,7 @@ export default function Leads() {
 
       cancelSource = createCancelSource(sendCancelSourceRef)
 
-      await axios.post('/api/email/outreach/send', { jobs }, { cancelToken: cancelSource.token })
+      await sendBulkEmailsAction({ jobs })
 
       setDrafts((prev) => {
         const next = { ...prev }
@@ -1085,18 +1050,9 @@ export default function Leads() {
         return
       }
       console.error('Email queue error:', error)
-      if (axios.isAxiosError(error)) {
-        const message =
-          (error.response?.data as { error?: string })?.error ||
-          error.message ||
-          'Failed to queue outreach emails'
-        setSourceError(message)
-        if (error.response?.status === 409) {
-          toast.error(message)
-        }
-      } else {
-        setSourceError('Failed to queue outreach emails')
-      }
+      const message = error instanceof Error ? error.message : 'Failed to queue outreach emails'
+      setSourceError(message)
+      toast.error(message)
     } finally {
       if (cancelSource && sendCancelSourceRef.current === cancelSource) {
         sendCancelSourceRef.current = null
@@ -1355,30 +1311,12 @@ export default function Leads() {
         deletingDraftId={deletingDraftId}
         manualCampaigns={manualCampaigns}
         filteredCampaigns={filteredCampaigns}
-        legacyJobs={legacyJobs}
-        filteredLegacyJobs={filteredLegacyJobs}
         onResumeDraft={handleResumeCampaignDraft}
         onDeleteDraft={handleDeleteCampaignDraft}
         onRefresh={() => refetchOutreachJobs().catch(() => undefined)}
         onExportAll={() => handleExportOutreachedCsv(undefined, { fileLabel: "outreached-emails" })}
         onExportCampaign={handleExportOutreachedCsv}
-        onSelectCampaign={setSelectedCampaign}
-        onPreviewLegacyJob={setPreviewJob}
-      />
-
-      <SentEmailPanel
-        open={Boolean(previewJob)}
-        job={previewJob}
-        onClose={() => setPreviewJob(null)}
-        plainBodyRenderer={htmlToPlainText}
-      />
-
-      <SentCampaignPanel
-        open={Boolean(selectedCampaign)}
-        campaign={selectedCampaign}
-        onClose={() => setSelectedCampaign(null)}
-        onExport={handleExportOutreachedCsv}
-        onPreviewJob={(job) => setPreviewJob(job)}
+        onNavigateCampaign={handleNavigateToCampaign}
       />
 
     </div>

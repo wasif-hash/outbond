@@ -65,8 +65,8 @@ export interface AuthResponse {
   retryAfterSeconds?: number
 }
 
-const MAIN_ADMIN_EMAIL = 'shannon@creatorwealthtools.com' as const
-const DEFAULT_ADMIN_PASSWORD = 'CWTAdmin2024!' as const
+const MAIN_ADMIN_EMAIL = 'shannon@creatorwealthtools.com'
+const DEFAULT_ADMIN_PASSWORD = 'CWTAdmin2024!'
 const RATE_LIMIT_ERROR = 'RATE_LIMIT_EXCEEDED'
 const RATE_LIMIT_MESSAGE = 'Too many attempts. Please try again later.'
 
