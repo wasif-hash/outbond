@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useCallback, useTransition } from "react"
+import { useState, useMemo, useCallback, useTransition, useEffect, useRef } from "react"
 import { getApiClient } from '@/lib/http-client'
 import { usePathname, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -56,11 +56,19 @@ const navigation: NavItem[] = [
 
 const accountNavigation: NavItem = { name: "Account", href: "/dashboard/account", icon: UserCircle }
 
+const REPLIES_BADGE_EVENT = "outbond:replies:badge-update"
+const REPLIES_UNREAD_KEY = "outbond.replies.unread"
+const REPLIES_LAST_SEEN_KEY = "outbond.replies.last-seen"
+const REPLIES_LATEST_TS_KEY = "outbond.replies.latest-timestamp"
+const REPLIES_FETCH_INTERVAL_MS = 60_000
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [showRestrictedDialog, setShowRestrictedDialog] = useState(false)
+  const [unreadReplies, setUnreadReplies] = useState(0)
+  const lastUnreadFetchRef = useRef({ at: 0, pending: false })
   const client = useMemo(() => getApiClient(), [])
 
   const pathname = usePathname()
@@ -85,6 +93,97 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.push(item.href)
     })
   }, [authLoading, isAdmin, pathname, router, startTransition])
+
+  useEffect(() => {
+    const parseCount = (value: string | null) => {
+      const parsed = Number(value ?? 0)
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+    }
+
+    const syncUnreadFromStorage = () => {
+      setUnreadReplies(parseCount(localStorage.getItem(REPLIES_UNREAD_KEY)))
+    }
+
+    const fetchUnreadFromApi = async () => {
+      if (lastUnreadFetchRef.current.pending) {
+        return
+      }
+      const now = Date.now()
+      if (now - lastUnreadFetchRef.current.at < REPLIES_FETCH_INTERVAL_MS) {
+        return
+      }
+
+      lastUnreadFetchRef.current.pending = true
+      try {
+        const lastSeen = Number(localStorage.getItem(REPLIES_LAST_SEEN_KEY) ?? 0)
+        const params = lastSeen ? `?after=${encodeURIComponent(String(lastSeen))}` : ""
+        const response = await fetch(`/api/replies/unread${params}`, { credentials: "include" })
+        if (!response.ok) {
+          syncUnreadFromStorage()
+          return
+        }
+        const payload: { count?: number; latestReceivedAt?: string | null } = await response.json()
+        const latestTs = payload.latestReceivedAt ? Date.parse(payload.latestReceivedAt) : null
+        if (latestTs && Number.isFinite(latestTs)) {
+          localStorage.setItem(REPLIES_LATEST_TS_KEY, String(latestTs))
+        }
+        const count = typeof payload.count === "number" ? payload.count : 0
+        localStorage.setItem(REPLIES_UNREAD_KEY, String(count))
+        setUnreadReplies(parseCount(String(count)))
+        window.dispatchEvent(new CustomEvent(REPLIES_BADGE_EVENT, { detail: { count } }))
+      } catch (error) {
+        console.error("Failed to fetch unread replies count", error)
+        syncUnreadFromStorage()
+      } finally {
+        lastUnreadFetchRef.current.pending = false
+        lastUnreadFetchRef.current.at = Date.now()
+      }
+    }
+
+    if (pathname !== "/dashboard/replies") {
+      fetchUnreadFromApi()
+    }
+
+    const badgeHandler = (event: Event) => {
+      const detail = (event as CustomEvent<{ count?: number }>).detail
+      if (typeof detail?.count === "number") {
+        setUnreadReplies(detail.count > 0 ? detail.count : 0)
+      }
+    }
+
+    const storageListener = (event: StorageEvent) => {
+      if (event.key === REPLIES_UNREAD_KEY) {
+        syncUnreadFromStorage()
+      }
+    }
+
+    const visibilityListener = () => {
+      if (document.visibilityState === "visible" && pathname !== "/dashboard/replies") {
+        fetchUnreadFromApi()
+      }
+    }
+
+    window.addEventListener(REPLIES_BADGE_EVENT, badgeHandler as EventListener)
+    window.addEventListener("storage", storageListener)
+    document.addEventListener("visibilitychange", visibilityListener)
+    return () => {
+      window.removeEventListener(REPLIES_BADGE_EVENT, badgeHandler as EventListener)
+      window.removeEventListener("storage", storageListener)
+      document.removeEventListener("visibilitychange", visibilityListener)
+    }
+  }, [pathname])
+
+  useEffect(() => {
+    if (pathname === "/dashboard/replies") {
+      const latestSeen = Number(localStorage.getItem(REPLIES_LATEST_TS_KEY) ?? Date.now())
+      localStorage.setItem(REPLIES_LAST_SEEN_KEY, String(latestSeen || Date.now()))
+      localStorage.setItem(REPLIES_UNREAD_KEY, "0")
+      window.dispatchEvent(new CustomEvent(REPLIES_BADGE_EVENT, { detail: { count: 0 } }))
+      setUnreadReplies(0)
+    }
+  }, [pathname])
+
+  const formattedUnread = unreadReplies > 99 ? "99+" : unreadReplies.toString()
 
   const handleLogout = async () => {
     try {
@@ -142,9 +241,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     )}
                   >
                     <item.icon className="mr-3 h-4 w-4" />
-                    <span className="flex items-center gap-2">
+                    <span className="flex items-center gap-2 flex-1">
                       {item.name}
                       {isRestricted ? <Lock className="h-3.5 w-3.5 text-muted-foreground" /> : null}
+                      {item.name === "Replies" && unreadReplies > 0 && pathname !== "/dashboard/replies" ? (
+                        <span className="ml-auto rounded-full bg-primary/90 px-2 py-0.5 text-xs font-mono text-primary-foreground">
+                          {formattedUnread}
+                        </span>
+                      ) : null}
                     </span>
                   </Link>
                 )
@@ -200,9 +304,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   )}
                 >
                   <item.icon className="mr-3 h-4 w-4" />
-                  <span className="flex items-center gap-2">
+                  <span className="flex items-center gap-2 flex-1">
                     {item.name}
                     {isRestricted ? <Lock className="h-3.5 w-3.5 text-muted-foreground" /> : null}
+                    {item.name === "Replies" && unreadReplies > 0 && pathname !== "/dashboard/replies" ? (
+                      <span className="ml-auto rounded-full bg-primary/90 px-2 py-0.5 text-xs font-mono text-primary-foreground">
+                        {formattedUnread}
+                      </span>
+                    ) : null}
                   </span>
                 </Link>
               )

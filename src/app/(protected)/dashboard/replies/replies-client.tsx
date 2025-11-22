@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { MessageSquare } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,6 +14,11 @@ type ReplyDisposition = ReplyRecord["disposition"]
 type RepliesClientProps = {
   replies: ReplyRecord[]
 }
+
+const REPLIES_BADGE_EVENT = "outbond:replies:badge-update"
+const REPLIES_UNREAD_KEY = "outbond.replies.unread"
+const REPLIES_LAST_SEEN_KEY = "outbond.replies.last-seen"
+const REPLIES_LATEST_TS_KEY = "outbond.replies.latest-timestamp"
 
 const FILTER_DEFINITIONS: Array<{ label: string; value: "all" | ReplyDisposition }> = [
   { label: "All", value: "all" },
@@ -89,14 +94,67 @@ const summariseSource = (source: string | null) => {
   return source.replace(/\b\w/g, (match) => match.toUpperCase())
 }
 
+const THREAD_BREAK_MARKERS = [
+  /^on .+wrote:?$/i,
+  /^from:\s*/i,
+  /^sent:\s*/i,
+  /^subject:\s*/i,
+  /^-{2,}\s*original message\s*-{2,}$/i,
+  /^begin forwarded message/i,
+]
+
+const extractLatestReplyText = (reply: ReplyRecord) => {
+  const content = reply.fullReply?.trim() || reply.snippet || ""
+  if (!content) return ""
+
+  const lines = content.replace(/\r\n?/g, "\n").split("\n")
+  const cleaned: string[] = []
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd()
+    const trimmed = line.trim()
+
+    if (!cleaned.length && trimmed.length === 0) {
+      continue
+    }
+
+    if (trimmed.startsWith(">")) {
+      break
+    }
+
+    if (THREAD_BREAK_MARKERS.some((pattern) => pattern.test(trimmed))) {
+      break
+    }
+
+    cleaned.push(line)
+  }
+
+  const joined = cleaned.join("\n").trim()
+  return joined || content
+}
+
 const getReplyPreview = (reply: ReplyRecord) => {
-  const base = (reply.fullReply || reply.snippet || "").replace(/\s+/g, " ").trim()
-  return base
+  const base =
+    extractLatestReplyText(reply).replace(/\s+/g, " ").trim() || reply.snippet || "No preview available."
+  return base.trim()
 }
 
 export function RepliesClient({ replies }: RepliesClientProps) {
   const [selectedFilter, setSelectedFilter] = useState<"all" | ReplyDisposition>("all")
   const [selectedReply, setSelectedReply] = useState<ReplyRecord | null>(null)
+
+  useEffect(() => {
+    const newestTimestamp = replies.reduce((latest, reply) => {
+      const received = Date.parse(reply.receivedAt)
+      return Number.isFinite(received) ? Math.max(latest, received) : latest
+    }, 0)
+
+    const safeLatest = newestTimestamp || Date.now()
+    localStorage.setItem(REPLIES_LAST_SEEN_KEY, String(safeLatest))
+    localStorage.setItem(REPLIES_LATEST_TS_KEY, String(safeLatest))
+    localStorage.setItem(REPLIES_UNREAD_KEY, "0")
+    window.dispatchEvent(new CustomEvent(REPLIES_BADGE_EVENT, { detail: { count: 0 } }))
+  }, [replies])
 
   const counts = useMemo(() => {
     return replies.reduce<Record<ReplyDisposition, number>>((acc, reply) => {
@@ -228,19 +286,19 @@ export function RepliesClient({ replies }: RepliesClientProps) {
       </Card>
 
       <Sheet
-        open={!!selectedReply}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectedReply(null)
-          }
-        }}
-      >
-        <SheetContent className="w-full sm:max-w-[540px]">
-          <SheetHeader>
-            <SheetTitle className="font-mono">
-              Reply from {selectedReply?.lead ?? "Lead"}
-            </SheetTitle>
-          </SheetHeader>
+      open={!!selectedReply}
+      onOpenChange={(open) => {
+        if (!open) {
+          setSelectedReply(null)
+        }
+      }}
+    >
+      <SheetContent className="w-full sm:max-w-[540px] px-4 sm:px-6">
+        <SheetHeader>
+          <SheetTitle className="font-mono">
+            Reply from {selectedReply?.lead ?? "Lead"}
+          </SheetTitle>
+        </SheetHeader>
 
           {selectedReply && (
             <div className="mt-6 space-y-6">
@@ -294,7 +352,7 @@ export function RepliesClient({ replies }: RepliesClientProps) {
                 <h4 className="mb-3 font-mono font-bold">Full Reply</h4>
                 <div className="rounded-lg border-l-4 border-cwt-plum bg-muted/40 p-4">
                   <pre className="whitespace-pre-wrap text-sm leading-relaxed">
-                    {selectedReply.fullReply || "No message content available."}
+                    {extractLatestReplyText(selectedReply) || "No message content available."}
                   </pre>
                 </div>
               </div>

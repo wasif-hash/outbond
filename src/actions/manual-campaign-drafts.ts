@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
 import type { ManualCampaignDraft, ManualCampaignDraftStatus, PersistedWorkflowState } from '@/types/outreach-workflow'
+import type { ManualCampaignDraft as PrismaManualCampaignDraft } from '@prisma/client'
 
 export type PersistDraftInput = {
   id: string | null
@@ -14,14 +15,14 @@ export type PersistDraftInput = {
   state: PersistedWorkflowState
 }
 
-const serializeDraft = (draft: { id: string; name: string; sourceType: string | null; status: ManualCampaignDraftStatus; createdAt: Date; updatedAt: Date; workflowState: PersistedWorkflowState }): ManualCampaignDraft => ({
+const serializeDraft = (draft: PrismaManualCampaignDraft): ManualCampaignDraft => ({
   id: draft.id,
   name: draft.name,
   sourceType: draft.sourceType as ManualCampaignDraft['sourceType'],
-  status: draft.status,
+  status: draft.status as ManualCampaignDraftStatus,
   createdAt: draft.createdAt.toISOString(),
   updatedAt: draft.updatedAt.toISOString(),
-  workflowState: draft.workflowState,
+  workflowState: draft.workflowState as PersistedWorkflowState,
 })
 
 /**

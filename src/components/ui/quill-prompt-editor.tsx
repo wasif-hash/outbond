@@ -9,6 +9,7 @@ type QuillPromptEditorProps = {
   onChange: (next: string) => void
   placeholder?: string
   output?: "text" | "html"
+  readOnly?: boolean
 }
 
 const TOOLBAR_OPTIONS = [
@@ -41,7 +42,7 @@ const sanitizeAnchorHtml = (html: string) => {
   return doc.body.innerHTML || ""
 }
 
-export function QuillPromptEditor({ value, onChange, placeholder, output = "text" }: QuillPromptEditorProps) {
+export function QuillPromptEditor({ value, onChange, placeholder, output = "text", readOnly = false }: QuillPromptEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const quillRef = useRef<Quill | null>(null)
   const onChangeRef = useRef(onChange)
@@ -76,6 +77,7 @@ export function QuillPromptEditor({ value, onChange, placeholder, output = "text
     })
 
     quill.root.classList.add("min-h-[160px]", "max-h-64", "overflow-y-auto", "text-sm", "leading-relaxed")
+    quill.enable(!readOnly)
     quill.on("text-change", () => {
       if (output === "html") {
         const html = sanitizeAnchorHtml(quill.root.innerHTML)
@@ -102,11 +104,12 @@ export function QuillPromptEditor({ value, onChange, placeholder, output = "text
       quillRef.current = null
       container.innerHTML = ""
     }
-  }, [output, placeholder])
+  }, [output, placeholder, readOnly])
 
   useEffect(() => {
     const quill = quillRef.current
     if (!quill) return
+    quill.enable(!readOnly)
     const rawCurrent = output === "html" ? sanitizeAnchorHtml(quill.root.innerHTML) : quill.getText().replace(/\n+$/, "")
     const normalizedCurrent = output === "html" && rawCurrent === "<p><br></p>" ? "" : rawCurrent
     const normalizedValue = output === "html" && value === "<p><br></p>" ? "" : value
@@ -129,7 +132,7 @@ export function QuillPromptEditor({ value, onChange, placeholder, output = "text
     } else {
       quill.setSelection(length - 1, 0, "silent")
     }
-  }, [output, value])
+  }, [output, readOnly, value])
 
   return <div ref={containerRef} className="quill-editor w-full" />
 }

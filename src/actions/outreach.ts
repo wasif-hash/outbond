@@ -20,7 +20,22 @@ export async function getOutreachedJobsAction(): Promise<OutreachedJob[]> {
   return data.jobs ?? []
 }
 
-export async function sendBulkEmailsAction(payload: { jobs: Array<{ leadEmail: string }> }) {
+type SendJobPayload = {
+  leadEmail: string
+  subject?: string
+  bodyHtml?: string
+  bodyText?: string
+  firstName?: string
+  lastName?: string
+  company?: string
+  summary?: string
+  sheetRowRef?: string
+  manualCampaignId?: string
+  manualCampaignName?: string
+  manualCampaignSource?: string | null
+}
+
+export async function sendBulkEmailsAction(payload: { jobs: SendJobPayload[] }) {
   const client = getApiClient()
   const cookieHeader = await buildCookieHeader()
   await client.post('/api/email/outreach/send', payload, {

@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ArrowDownIcon, ArrowUpIcon, MinusIcon } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -87,6 +87,20 @@ type DashboardClientProps = {
 }
 
 export function DashboardClient({ analytics, isAdmin }: DashboardClientProps) {
+  const INITIAL_ACTIVITY_COUNT = 8
+  const LOAD_MORE_STEP = 8
+  const [visibleActivityCount, setVisibleActivityCount] = useState(INITIAL_ACTIVITY_COUNT)
+
+  useEffect(() => {
+    setVisibleActivityCount(INITIAL_ACTIVITY_COUNT)
+  }, [analytics.activity])
+
+  // Kick off a background replies sync when the dashboard loads so replies pages are fresh.
+  useEffect(() => {
+    fetch("/api/replies/sync", { method: "POST", credentials: "include" }).catch(() => {
+      // Background fire-and-forget; ignore errors here.
+    })
+  }, [])
 
   const chartData = useMemo(() => {
     const combined = new Map<
@@ -162,11 +176,11 @@ export function DashboardClient({ analytics, isAdmin }: DashboardClientProps) {
       {
         key: "replies",
         title: "Replies",
-        value: "0",
+        value: formatNumber(analytics.metrics.repliesCount ?? 0),
         trend: "neutral",
-        changeLabel: "Tracking coming soon",
-        description: "Reply sync is being configured",
-        muted: true,
+        changeLabel: "Synced replies",
+        description: "Latest replies synced to your inbox",
+        muted: false,
       },
       {
         key: "bookings",
@@ -310,26 +324,43 @@ export function DashboardClient({ analytics, isAdmin }: DashboardClientProps) {
                 No recent activity yet. Run a campaign or send outreach to see live updates.
               </div>
             ) : (
-              <div className="space-y-4">
-                {analytics.activity.map((item) => {
-                  const occurred = new Date(item.occurredAt)
-                  return (
-                    <div key={item.id} className="flex items-start gap-3">
-                      <div className="text-sm font-mono text-muted-foreground min-w-[3.5rem]">
-                        {timeFormatter.format(occurred)}
+              <>
+                <div className="space-y-4 max-h-72 overflow-y-auto pr-1">
+                  {analytics.activity.slice(0, visibleActivityCount).map((item) => {
+                    const occurred = new Date(item.occurredAt)
+                    return (
+                      <div key={item.id} className="flex items-start gap-3">
+                        <div className="text-sm font-mono text-muted-foreground min-w-[3.5rem]">
+                          {timeFormatter.format(occurred)}
+                        </div>
+                        <div
+                          className="mt-1 h-2 w-2 rounded-full"
+                          style={{ backgroundColor: getActivityAccent(item.type) }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-foreground">{item.title}</div>
+                          <div className="text-xs text-muted-foreground truncate">{item.description}</div>
+                        </div>
                       </div>
-                      <div
-                        className="mt-1 h-2 w-2 rounded-full"
-                        style={{ backgroundColor: getActivityAccent(item.type) }}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-foreground">{item.title}</div>
-                        <div className="text-xs text-muted-foreground truncate">{item.description}</div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
+                    )
+                  })}
+                </div>
+                {visibleActivityCount < analytics.activity.length && (
+                  <div className="pt-3">
+                    <button
+                      type="button"
+                      className="text-xs font-mono text-primary hover:text-primary/80"
+                      onClick={() =>
+                        setVisibleActivityCount((current) =>
+                          Math.min(current + LOAD_MORE_STEP, analytics.activity.length),
+                        )
+                      }
+                    >
+                      Load more
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
         </Card>

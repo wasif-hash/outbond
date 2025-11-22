@@ -18,6 +18,7 @@ export type DashboardAnalyticsResponse = {
     leadsWritten: number
     outreachEmailsSent: number
     userCount: number | null
+    repliesCount?: number
   }
   trends: {
     leadWrites: DashboardTrendPoint[]

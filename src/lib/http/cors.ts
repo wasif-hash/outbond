@@ -89,7 +89,7 @@ const runCors = (request: NextRequest) => {
 export type CorsContext = {
   isPreflight: boolean
   statusCode: number
-  apply: <T extends Response>(response: T) => T
+  apply: (response: Response) => Response
   respond: (body?: BodyInit | null, init?: ResponseInit) => Response
 }
 
@@ -105,14 +105,14 @@ export async function ensureCors(request: NextRequest): Promise<CorsContext> {
   return {
     isPreflight: response.ended && request.method.toUpperCase() === "OPTIONS",
     statusCode: response.statusCode ?? 204,
-    apply: <T extends Response>(res: T) => {
+    apply: (res: Response) => {
       const next = new NextResponse(res.body, {
         status: res.status,
         statusText: res.statusText,
         headers: res.headers,
       })
       applyHeaders(next.headers)
-      return next as T
+      return next
     },
     respond: (body?: BodyInit | null, init?: ResponseInit) => {
       const next = new NextResponse(body ?? response.body, {

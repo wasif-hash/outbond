@@ -20,7 +20,6 @@ export function useSavedSnippets(options: SavedSnippetsQueryOptions = {}) {
     queryKey: SAVED_SNIPPETS_QUERY_KEY,
     queryFn: fetchSavedSnippets,
     staleTime: 1000 * 60 * 60 * 24, // keep for entire session
-    cacheTime: 1000 * 60 * 60 * 24,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     refetchOnMount: false,

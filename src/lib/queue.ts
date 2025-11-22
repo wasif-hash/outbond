@@ -3,11 +3,43 @@ import { Queue, Job } from 'bullmq'
 import type { JobsOptions, JobType } from 'bullmq'
 import Redis from 'ioredis'
 
+const isBuildPhase = process.env.NEXT_PHASE === 'phase-production-build'
+
+class NoopQueue {
+  name: string
+  constructor(name: string) {
+    this.name = name
+  }
+  async add() {
+    return {} as Job
+  }
+  async getJobs() {
+    return [] as Job[]
+  }
+  async clean() {
+    return []
+  }
+}
+
+const createRedisClient = () => {
+  if (isBuildPhase && !process.env.REDIS_URL) {
+    return {
+      status: 'end',
+      quit: async () => 'OK',
+      ping: async () => 'OK',
+      eval: async () => null,
+      hmget: async () => [],
+      set: async () => null,
+    } as unknown as Redis
+  }
+  return new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+    maxRetriesPerRequest: null, // BullMQ requires this to be null
+    lazyConnect: true,
+  })
+}
+
 // Redis connection
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
-  maxRetriesPerRequest: null, // BullMQ requires this to be null
-  lazyConnect: true,
-})
+const redis = createRedisClient()
 
 export interface LeadFetchJobData {
   campaignId: string
@@ -23,27 +55,31 @@ export interface EmailSendQueueData {
 }
 
 // Job queue for lead fetching
-export const leadFetchQueue = new Queue('lead-fetch', {
-  connection: redis,
-  defaultJobOptions: {
-    removeOnComplete: 50, // Keep last 50 completed jobs
-    removeOnFail: 100, // Keep last 100 failed jobs
-    attempts: 1,
-  },
-})
+export const leadFetchQueue = isBuildPhase
+  ? (new NoopQueue('lead-fetch') as unknown as Queue)
+  : new Queue('lead-fetch', {
+      connection: redis,
+      defaultJobOptions: {
+        removeOnComplete: 50, // Keep last 50 completed jobs
+        removeOnFail: 100, // Keep last 100 failed jobs
+        attempts: 1,
+      },
+    })
 
-export const emailSendQueue = new Queue('email-send', {
-  connection: redis,
-  defaultJobOptions: {
-    removeOnComplete: 200,
-    removeOnFail: 200,
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 5000,
-    },
-  },
-})
+export const emailSendQueue = isBuildPhase
+  ? (new NoopQueue('email-send') as unknown as Queue)
+  : new Queue('email-send', {
+      connection: redis,
+      defaultJobOptions: {
+        removeOnComplete: 200,
+        removeOnFail: 200,
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+      },
+    })
 
 // Enqueue a job
 export async function enqueueJob(

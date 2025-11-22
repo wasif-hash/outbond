@@ -24,6 +24,7 @@ import {
   SheetLead,
 } from "@/types/outreach"
 import { SpreadsheetData } from "@/types/google-sheet"
+import type { SavedSnippet } from "@/types/saved-snippet"
 import { parseSheet } from "@/lib/leads/outreach"
 import { formatEmailBody } from "@/lib/email/format"
 import { DraftPreviewPanel } from "./components/draft-preview-panel"
@@ -118,6 +119,10 @@ export default function Leads() {
   })
 
   const { data: savedSnippetsData, refetch: refetchSavedSnippets } = useSavedSnippets()
+  const savedSnippets = useMemo<SavedSnippet[]>(
+    () => (Array.isArray(savedSnippetsData) ? savedSnippetsData : []),
+    [savedSnippetsData],
+  )
 
   useEffect(() => {
     if (outreachJobsError) {
@@ -669,13 +674,10 @@ export default function Leads() {
     })
   }, [manualCampaigns, searchTerm])
 
-  const savedPrompts = useMemo(
-    () => (savedSnippetsData ?? []).filter((snippet) => snippet.type === "PROMPT"),
-    [savedSnippetsData],
-  )
+  const savedPrompts = useMemo(() => savedSnippets.filter((snippet) => snippet.type === "PROMPT"), [savedSnippets])
   const savedSignatures = useMemo(
-    () => (savedSnippetsData ?? []).filter((snippet) => snippet.type === "SIGNATURE"),
-    [savedSnippetsData],
+    () => savedSnippets.filter((snippet) => snippet.type === "SIGNATURE"),
+    [savedSnippets],
   )
 
   const draftCampaigns = useMemo<ManualCampaignDraft[]>(() => {
@@ -1006,7 +1008,7 @@ export default function Leads() {
           const draft = drafts[email]
           if (!lead || !draft) return null
           return {
-            email,
+            leadEmail: email,
             subject: draft.subject,
             bodyHtml: draft.bodyHtml,
             bodyText: draft.bodyText,
@@ -1020,7 +1022,7 @@ export default function Leads() {
             manualCampaignSource: sourceType as ManualOutreachSource | null,
           }
         })
-        .filter(Boolean)
+        .filter((job): job is NonNullable<typeof job> => Boolean(job))
 
       if (!jobs.length) {
         setSourceError('No drafts available for the selected leads')

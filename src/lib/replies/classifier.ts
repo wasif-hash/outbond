@@ -193,9 +193,7 @@ async function classifyWithOpenAI(input: ReplyClassificationInput): Promise<Repl
     },
     {
       role: "user" as const,
-      content: [
-        `Classify the following reply.\n\nAllowed dispositions:\n- POSITIVE: The lead shows clear interest or wants to talk.\n- NEUTRAL: The lead is unclear, asks for more info, or auto replies.\n- NOT_INTERESTED: The lead declines or is not a fit.\n- UNSUB: The lead wants to unsubscribe or stop receiving emails.\n- BOUNCED: The message indicates a delivery failure or auto bounce.\n\nReturn JSON with keys: disposition, summary, confidence, reasoning, snippet.\n\nSubject: ${input.subject ?? "(no subject)"}\nReply:\n\"\"\"\n${bodyForPrompt}\n\"\"\"`,
-      ],
+      content: `Classify the following reply.\n\nAllowed dispositions:\n- POSITIVE: The lead shows clear interest or wants to talk.\n- NEUTRAL: The lead is unclear, asks for more info, or auto replies.\n- NOT_INTERESTED: The lead declines or is not a fit.\n- UNSUB: The lead wants to unsubscribe or stop receiving emails.\n- BOUNCED: The message indicates a delivery failure or auto bounce.\n\nReturn JSON with keys: disposition, summary, confidence, reasoning, snippet.\n\nSubject: ${input.subject ?? "(no subject)"}\nReply:\n\"\"\"\n${bodyForPrompt}\n\"\"\"`,
     },
   ]
 

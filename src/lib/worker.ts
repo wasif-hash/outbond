@@ -1081,15 +1081,8 @@ export class LeadFetchWorker {
 
   private async createLeadSummary(lead: ApolloLead): Promise<string> {
     try {
-      return await generateSmartLeadSummary({
-        firstName: lead.first_name,
-        lastName: lead.last_name,
-        title: lead.title,
-        company: lead.company_name,
-        domain: lead.domain,
-        email: lead.email,
-        linkedinUrl: lead.linkedin_url,
-        rawPayload: lead.raw_person ?? {
+      const rawPayload: Record<string, unknown> =
+        (lead.raw_person as Record<string, unknown> | null | undefined) ?? {
           id: lead.id,
           first_name: lead.first_name,
           last_name: lead.last_name,
@@ -1100,7 +1093,17 @@ export class LeadFetchWorker {
           city: lead.city,
           state: lead.state,
           country: lead.country,
-        },
+        }
+
+      return await generateSmartLeadSummary({
+        firstName: lead.first_name,
+        lastName: lead.last_name,
+        title: lead.title,
+        company: lead.company_name,
+        domain: lead.domain,
+        email: lead.email,
+        linkedinUrl: lead.linkedin_url,
+        rawPayload,
       })
     } catch (error) {
       console.error('Gemini summary helper failed, using fallback:', error)

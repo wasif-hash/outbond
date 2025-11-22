@@ -486,32 +486,71 @@ async function syncRepliesForUser(userId: string): Promise<void> {
 }
 
 export async function fetchRepliesForUser(userId: string): Promise<ReplyRecord[]> {
-  await syncRepliesForUser(userId).catch((error) => {
+  // Kick off sync in the background so the page is not blocked by Gmail/network latency.
+  syncRepliesForUser(userId).catch((error) => {
     console.error("Failed to sync Gmail replies", error)
   })
 
   const replies = await prisma.emailReply.findMany({
     where: { userId },
-    include: {
+    select: {
+      id: true,
+      leadEmail: true,
+      subject: true,
+      snippet: true,
+      bodyPlain: true,
+      bodyHtml: true,
+      receivedAt: true,
+      gmailMessageId: true,
+      gmailThreadId: true,
+      summary: true,
+      disposition: true,
+      classificationModel: true,
+      classificationConfidence: true,
       emailSendJob: {
-        include: {
-          campaign: true,
+        select: {
+          leadFirstName: true,
+          leadLastName: true,
+          leadCompany: true,
+          manualCampaignName: true,
+          campaign: {
+            select: {
+              name: true,
+            },
+          },
         },
       },
-      lead: true,
-      campaign: true,
+      lead: {
+        select: {
+          firstName: true,
+          lastName: true,
+          company: true,
+        },
+      },
+      campaign: {
+        select: {
+          name: true,
+        },
+      },
     },
     orderBy: {
       receivedAt: "desc",
     },
-    take: 200,
+    take: 120,
   })
 
-  for (const reply of replies) {
-    await classifyIfNeeded(reply)
-  }
+  // Fire-and-forget classification to avoid blocking the page render.
+  void Promise.allSettled(replies.map((reply) => classifyIfNeeded(reply as RawEmailReply))).catch((error) => {
+    console.error("Failed to classify replies in background", error)
+  })
 
-  return replies.map(mapToReplyRecord)
+  return replies.map((reply) => mapToReplyRecord(reply as RawEmailReply))
+}
+
+export function triggerReplySync(userId: string): void {
+  void syncRepliesForUser(userId).catch((error) => {
+    console.error("Failed to trigger reply sync", error)
+  })
 }
 
 export function formatReplyTimestamp(isoDate: string): string {

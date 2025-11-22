@@ -31,6 +31,7 @@ export async function GET(request: NextRequest) {
     const [
       leadWriteAggregate,
       outreachSentCount,
+      repliesCount,
       totalUserCount,
       recentLeads,
       recentCampaignJobs,
@@ -53,6 +54,11 @@ export async function GET(request: NextRequest) {
         where: {
           userId,
           status: "SENT",
+        },
+      }),
+      prisma.emailReply.count({
+        where: {
+          userId,
         },
       }),
       isAdmin
@@ -220,6 +226,7 @@ export async function GET(request: NextRequest) {
       metrics: {
         leadsWritten: leadWriteAggregate._sum.leadsWritten ?? 0,
         outreachEmailsSent: outreachSentCount,
+        repliesCount,
         userCount: isAdmin ? totalUserCount ?? 0 : null,
       },
       trends: {

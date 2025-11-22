@@ -17,6 +17,7 @@ export interface ApolloLead {
   formatted_address?: string
   summary?: string
   raw_person?: RawApolloLead | null
+  headline?: string | null
 }
 
 export interface ApolloBulkMatchPersonRequest {
